@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import torch
-
 from pathlib import Path
 import tempfile
 from typing import Any, Mapping
