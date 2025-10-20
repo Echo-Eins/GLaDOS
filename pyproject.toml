@@ -30,6 +30,7 @@ dev = [
     "types-PyYAML",
 ]
 api = ["litestar[standard,structlog]>=2.15.1"]
+ru = ["gigaam==0.1.0"]
 
 [project.scripts]
 glados = "glados.cli:main"

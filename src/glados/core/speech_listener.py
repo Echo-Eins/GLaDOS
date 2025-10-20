@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 
 from ..ASR import TranscriberProtocol
 from ..audio_io import AudioProtocol
-
+from .audio_data import RecognitionResult
 
 class SpeechListener:
     """
@@ -36,7 +36,7 @@ class SpeechListener:
     def __init__(
         self,
         audio_io: AudioProtocol,  # Replace with actual type if known
-        llm_queue: queue.Queue[str],
+        llm_queue: queue.Queue[RecognitionResult],
         shutdown_event: threading.Event,
         currently_speaking_event: threading.Event,
         processing_active_event: threading.Event,
@@ -238,20 +238,22 @@ class SpeechListener:
         """
         logger.debug("Detected pause after speech. Processing...")
 
-        detected_text = self.asr(self._samples)
+        recognition = self.asr(self._samples)
 
-        if detected_text:
-            logger.success(f"ASR text: '{detected_text}'")
+        if recognition.text:
+            logger.success(f"ASR text: '{recognition.text}'")
+            if recognition.emotions:
+                logger.success(f"ASR emotions: {dict(recognition.emotions)}")
 
-            if self.wake_word and not self._wakeword_detected(detected_text):
+            if self.wake_word and not self._wakeword_detected(recognition.text):
                 logger.info(f"Required wake word {self.wake_word=} not detected.")
             else:
-                self.llm_queue.put(detected_text)
+                self.llm_queue.put(recognition)
                 self.processing_active_event.set()
 
         self.reset()
 
-    def asr(self, samples: list[NDArray[np.float32]]) -> str:
+    def asr(self, samples: list[NDArray[np.float32]]) -> RecognitionResult:
         """
         Performs Automatic Speech Recognition (ASR) on a list of audio samples.
 
@@ -267,7 +269,7 @@ class SpeechListener:
         """
         if not samples:
             logger.warning("ASR received empty sample list")
-            return ""
+            return RecognitionResult(text="", emotions=None)
 
         audio = np.concatenate(samples)
 
@@ -275,10 +277,18 @@ class SpeechListener:
         max_abs_val = np.max(np.abs(audio))
         if max_abs_val < 1e-10:  # Threshold for effectively silent audio
             logger.warning("ASR received effectively silent audio")
-            return ""
+            return RecognitionResult(text="", emotions=None)
 
         # Normalize to full range [-1.0, 1.0]
         audio = audio / max_abs_val
 
-        detected_text = self.asr_model.transcribe(audio)
-        return detected_text
+        emotions = None
+        detected_text = ""
+
+        if hasattr(self.asr_model, "transcribe_with_emotions"):
+            text, emotions = getattr(self.asr_model, "transcribe_with_emotions")(audio)
+            detected_text = text
+        else:
+            detected_text = self.asr_model.transcribe(audio)
+
+        return RecognitionResult(text=detected_text, emotions=emotions)

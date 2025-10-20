@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Any, ClassVar
 
+from .audio_data import RecognitionResult
+
 from loguru import logger
 from pydantic import HttpUrl  # If HttpUrl is used by config
 import requests
@@ -23,7 +25,7 @@ class LanguageModelProcessor:
 
     def __init__(
         self,
-        llm_input_queue: queue.Queue[str],
+        llm_input_queue: queue.Queue[RecognitionResult],
         tts_input_queue: queue.Queue[str],
         conversation_history: list[dict[str, str]],  # Shared
         completion_url: HttpUrl,
@@ -132,7 +134,14 @@ class LanguageModelProcessor:
         logger.info("LanguageModelProcessor thread started.")
         while not self.shutdown_event.is_set():
             try:
-                detected_text = self.llm_input_queue.get(timeout=self.pause_time)
+                recognition = self.llm_input_queue.get(timeout=self.pause_time)
+                detected_text = recognition.text
+                emotions = recognition.emotions
+
+                if not detected_text:
+                    logger.info("LLM Processor: Received empty ASR result, skipping request.")
+                    continue
+
                 if not self.processing_active_event.is_set():  # Check if we were interrupted before starting
                     logger.info("LLM Processor: Interruption signal active, discarding LLM request.")
                     # Ensure EOS is sent if a previous stream was cut short by this interruption
@@ -140,6 +149,10 @@ class LanguageModelProcessor:
                     continue
 
                 logger.info(f"LLM Processor: Received text for LLM: '{detected_text}'")
+
+                if emotions:
+                    logger.info(f"LLM Processor: Emotion probabilities {dict(emotions)}")
+
                 self.conversation_history.append({"role": "user", "content": detected_text})
 
                 data = {
@@ -148,6 +161,9 @@ class LanguageModelProcessor:
                     "messages": self.conversation_history,
                     # Add other parameters like temperature, max_tokens if needed from config
                 }
+
+                if emotions:
+                    data["metadata"] = {"emotions": dict(emotions)}
 
                 sentence_buffer: list[str] = []
                 try:

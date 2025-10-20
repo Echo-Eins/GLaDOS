@@ -6,6 +6,8 @@ between different components of the voice assistant pipeline.
 
 from dataclasses import dataclass
 
+from typing import Mapping
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -36,3 +38,10 @@ class AudioInputMessage:
 
     audio_sample: NDArray[np.float32]
     vad_confidence: bool = False
+
+@dataclass
+class RecognitionResult:
+    """Speech recognition outcome including optional emotion probabilities."""
+
+    text: str
+    emotions: Mapping[str, float] | None = None

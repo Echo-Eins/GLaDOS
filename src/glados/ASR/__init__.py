@@ -16,8 +16,11 @@ class TranscriberProtocol(Protocol):
 
 # Factory function
 def get_audio_transcriber(
-    engine_type: str = "ctc", **kwargs: dict[str, Any]
-) -> TranscriberProtocol:  # Return type is now a Union of concrete types
+        engine_type: str = "ctc",
+        *,
+        language: str = "en",
+        **kwargs: Any,
+) -> TranscriberProtocol:
     """
     Factory function to get an instance of an audio transcriber based on the specified engine type.
 
@@ -33,6 +36,13 @@ def get_audio_transcriber(
     Raises:
         ValueError: If the specified engine type is not supported
     """
+    normalized_language = language.lower()
+
+    if engine_type.lower() == "gigaam" or normalized_language == "ru":
+        from .gigaam_asr import AudioTranscriber as GigaAMTranscriber
+
+        return GigaAMTranscriber(language=normalized_language, **kwargs)
+
     if engine_type.lower() == "ctc":
         from .ctc_asr import AudioTranscriber as CTCTranscriber
 

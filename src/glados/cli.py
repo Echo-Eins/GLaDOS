@@ -189,7 +189,7 @@ def say(text: str, config_path: str | Path = "glados_config.yaml") -> None:
     sd.wait()
 
 
-def start(config_path: str | Path = "glados_config.yaml") -> None:
+def start(config_path: str | Path = "glados_config.yaml", *, language: str | None = None) -> None:
     """
     Start the GLaDOS voice assistant and initialize its listening event loop.
 
@@ -209,6 +209,10 @@ def start(config_path: str | Path = "glados_config.yaml") -> None:
         start("/path/to/custom/config.yaml")  # Uses a custom configuration file
     """
     glados_config = GladosConfig.from_yaml(str(config_path))
+
+    if language:
+        glados_config = glados_config.model_copy(update={"language": language.lower()})
+
     glados = Glados.from_config(glados_config)
     if glados.announcement:
         glados.play_announcement()
@@ -268,6 +272,13 @@ def main() -> int:
         help=f"Path to configuration file (default: {DEFAULT_CONFIG})",
     )
 
+    start_parser.add_argument(
+        "--language",
+        type=str,
+        choices=["en", "ru"],
+        help="Override ASR language without editing the configuration file.",
+    )
+
     # TUI command
     tui_parser = subparsers.add_parser("tui", help="Start GLaDOS voice assistant with TUI")
 
@@ -292,7 +303,7 @@ def main() -> int:
         if args.command == "say":
             say(args.text, args.config)
         elif args.command == "start":
-            start(args.config)
+            start(args.config, language=getattr(args, "language", None))
         elif args.command == "tui":
             tui()
         else:

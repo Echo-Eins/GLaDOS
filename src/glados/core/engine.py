@@ -20,7 +20,7 @@ from ..audio_io import AudioProtocol, get_audio_system
 from ..TTS import SpeechSynthesizerProtocol, get_speech_synthesizer
 from ..utils import spoken_text_converter as stc
 from ..utils.resources import resource_path
-from .audio_data import AudioMessage
+from .audio_data import AudioMessage, RecognitionResult
 from .llm_processor import LanguageModelProcessor
 from .speech_listener import SpeechListener
 from .speech_player import SpeechPlayer
@@ -74,6 +74,7 @@ class GladosConfig(BaseModel):
     interruptible: bool
     audio_io: str
     asr_engine: str
+    language: str = "en"
     wake_word: str | None
     voice: str
     announcement: str | None
@@ -192,7 +193,7 @@ class Glados:
         self.shutdown_event = threading.Event()  # Event to signal shutdown of all threads
 
         # Initialize queues for inter-thread communication
-        self.llm_queue: queue.Queue[str] = queue.Queue()  # Text from SpeechListener to LLMProcessor
+        self.llm_queue: queue.Queue[RecognitionResult] = queue.Queue()
         self.tts_queue: queue.Queue[str] = queue.Queue()  # Text from LLMProcessor to TTSynthesizer
         self.audio_queue: queue.Queue[AudioMessage] = queue.Queue()  # AudioMessages from TTSSynthesizer to AudioPlayer
 
@@ -304,6 +305,7 @@ class Glados:
 
         asr_model = get_audio_transcriber(
             engine_type=config.asr_engine,
+            language=config.language,
         )
 
         tts_model: SpeechSynthesizerProtocol
