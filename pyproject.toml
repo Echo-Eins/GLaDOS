@@ -12,6 +12,7 @@ dependencies = [
     "textual>=1.0.0",
     "pyyaml>=6.0.2",
     "numba>=0.61.0",
+    "numpy<2",
     "soundfile>=0.13.0",
     "pydantic>=2.10.6",
     "httpx>=0.28.1",
