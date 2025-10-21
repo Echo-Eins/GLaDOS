@@ -9,6 +9,19 @@ from numpy.typing import NDArray
 from loguru import logger
 import soundfile as sf
 
+def _wrap_ffmpeg_error(exc: FileNotFoundError) -> RuntimeError:
+    """Create a user-friendly error when the ffmpeg binary is missing."""
+
+    missing_binary = exc.filename or "ffmpeg"
+    message = (
+        "GigaAM ASR requires the external 'ffmpeg' executable to be installed and "
+        "available on the system PATH. "
+        f"Executable '{missing_binary}' could not be found. "
+        "Install ffmpeg and restart GLaDOS."
+    )
+
+    return RuntimeError(message)
+
 
 class AudioTranscriber:
     """GigaAM-based automatic speech recognition with emotion analysis."""
@@ -49,7 +62,10 @@ class AudioTranscriber:
         return text
 
     def transcribe_file(self, audio_path: Path) -> str:
-        return str(self._asr_model.transcribe(str(audio_path)))
+        try:
+            return str(self._asr_model.transcribe(str(audio_path)))
+        except FileNotFoundError as exc:  # pragma: no cover - depends on environment
+            raise _wrap_ffmpeg_error(exc) from exc
 
     def transcribe_with_emotions(
         self, audio_source: NDArray[Any] | Path
@@ -71,7 +87,10 @@ class AudioTranscriber:
             temp_path.unlink(missing_ok=True)
 
     def _decode_with_emotions(self, audio_path: Path) -> tuple[str, Mapping[str, float]]:
-        transcription = str(self._asr_model.transcribe(str(audio_path)))
-        emotion_probs = self._emotion_model.get_probs(str(audio_path))
+        try:
+            transcription = str(self._asr_model.transcribe(str(audio_path)))
+            emotion_probs = self._emotion_model.get_probs(str(audio_path))
+        except FileNotFoundError as exc:  # pragma: no cover - depends on environment
+            raise _wrap_ffmpeg_error(exc) from exc
         formatted = {label: round(float(value), 4) for label, value in emotion_probs.items()}
         return transcription, formatted
