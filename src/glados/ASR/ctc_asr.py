@@ -11,7 +11,9 @@ from ..utils.resources import resource_path
 from .mel_spectrogram import MelSpectrogramCalculator, MelSpectrogramConfig
 
 # Default OnnxRuntime is way to verbose, only show fatal errors
-ort.set_default_logger_severity(4)
+# This function may not be available in all onnxruntime builds
+if hasattr(ort, "set_default_logger_severity"):
+    ort.set_default_logger_severity(4)
 
 
 class AudioTranscriber:
