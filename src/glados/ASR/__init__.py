@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Any, Protocol
+import warnings
 
 from numpy.typing import NDArray
 
@@ -38,16 +39,33 @@ def get_audio_transcriber(
     """
     normalized_language = language.lower()
 
-    if engine_type.lower() == "gigaam" or normalized_language == "ru":
-        from .gigaam_asr import AudioTranscriber as GigaAMTranscriber
+    requested_engine = engine_type.lower()
 
-        return GigaAMTranscriber(language=normalized_language, **kwargs)
+    if requested_engine == "gigaam" or normalized_language == "ru":
+        try:
+            from .gigaam_asr import AudioTranscriber as GigaAMTranscriber
+        except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+            warnings.warn(
+                "GigaAM ASR backend is unavailable because optional dependencies are missing. "
+                "Falling back to the ONNX-based models.",
+                stacklevel=2,
+            )
+        else:
+            try:
+                return GigaAMTranscriber(language=normalized_language, **kwargs)
+            except RuntimeError as exc:  # pragma: no cover - import guard
+                warnings.warn(
+                    f"Failed to initialize GigaAM ASR backend ({exc}). Falling back to the ONNX-based models.",
+                    stacklevel=2,
+                )
 
-    if engine_type.lower() == "ctc":
+        requested_engine = "tdt" if requested_engine == "gigaam" else requested_engine
+
+    if requested_engine == "ctc":
         from .ctc_asr import AudioTranscriber as CTCTranscriber
 
         return CTCTranscriber()
-    elif engine_type.lower() == "tdt":
+    elif requested_engine == "tdt":
         from .tdt_asr import AudioTranscriber as TDTTranscriber
 
         return TDTTranscriber()
