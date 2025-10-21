@@ -27,11 +27,15 @@ class VAD:
             - Sets up inference session with the specified model
             - Initializes internal state variables for processing audio chunks
         """
-        providers = ort.get_available_providers()
-        if "TensorrtExecutionProvider" in providers:
-            providers.remove("TensorrtExecutionProvider")
-        if "CoreMLExecutionProvider" in providers:
-            providers.remove("CoreMLExecutionProvider")
+        # Get available providers, with fallback for builds without this function
+        if hasattr(ort, "get_available_providers"):
+            providers = ort.get_available_providers()
+            if "TensorrtExecutionProvider" in providers:
+                providers.remove("TensorrtExecutionProvider")
+            if "CoreMLExecutionProvider" in providers:
+                providers.remove("CoreMLExecutionProvider")
+        else:
+            providers = ["CPUExecutionProvider"]
 
         self.ort_sess = ort.InferenceSession(
             model_path,
