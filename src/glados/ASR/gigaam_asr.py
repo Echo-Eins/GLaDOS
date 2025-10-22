@@ -39,11 +39,15 @@ class AudioTranscriber:
         try:
             import torch
             import gigaam
+            from glados.utils.gigaam_patches import apply_gigaam_patches
         except ImportError as exc:  # pragma: no cover - import guard
             raise RuntimeError(
                 "GigaAM ASR requires the optional 'gigaam' and 'torch' dependencies. "
                 "Install them with 'pip install glados[ru]' or add them manually."
             ) from exc
+
+        # Apply patches to suppress warnings
+        apply_gigaam_patches()
 
         self.language = language.lower()
         if self.language not in {"ru", "en"}:

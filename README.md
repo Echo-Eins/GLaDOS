@@ -86,13 +86,38 @@ Install the PortAudio library, if you don't yet have it installed:
 
         python scripts\install.py
 
-   This will install Glados and download the needed AI models 
+   This will install Glados and download the needed AI models
 3. To start GLaDOS, run:
 
         uv run glados
     If you want something more fancy, try the Text UI (TUI), with:
 
         uv run glados tui
+
+## Installing with CUDA Support (for Russian Language Support)
+
+If you want to use Russian language support with CUDA acceleration:
+
+1. Make sure you have CUDA 12.1 installed on your system
+2. Install GLaDOS with both CUDA and Russian support:
+
+   Mac/Linux:
+
+        python scripts/install.py --extra cuda --extra ru
+
+   Windows:
+
+        python scripts\install.py --extra cuda --extra ru
+
+3. After installation, sync dependencies with:
+
+        uv sync --extra cuda --extra ru
+
+4. To start GLaDOS with Russian support:
+
+        uv run glados
+
+The CUDA-enabled PyTorch will be automatically used for faster inference. The configuration ensures that torch+cu121 versions are preserved when installing the Russian language pack (gigaam).
 
 ## Speech Generation
 You can also get her to say something with:
