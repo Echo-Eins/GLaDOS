@@ -28,9 +28,6 @@ cuda = [
 ]
 cpu = [
     "onnxruntime>=1.16.0",
-    "torch==2.5.1",
-    "torchaudio==2.5.1",
-    "torchvision==0.20.1",
 ]
 dev = [
     "pytest",
@@ -118,14 +115,7 @@ name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"
 explicit = true
 
-[[tool.uv.source]]
-name = "torch"
-index = "pytorch-cu121"
-
-[[tool.uv.source]]
-name = "torchaudio"
-index = "pytorch-cu121"
-
-[[tool.uv.source]]
-name = "torchvision"
-index = "pytorch-cu121"
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchaudio = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }
