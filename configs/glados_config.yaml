@@ -1,5 +1,6 @@
 Glados:
-  llm_model: "gpt-oss:20b"
+  #llm_model: "gpt-oss:20b"
+  llm_model: "huihui_ai/qwen2.5-abliterate:14b"
   completion_url: "http://localhost:11434/api/chat"
   api_key: null  # Add your API key here if needed!
   interruptible: true

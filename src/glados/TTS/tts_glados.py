@@ -11,6 +11,7 @@ import onnxruntime as ort  # type: ignore
 
 from ..utils.resources import resource_path
 from .phonemizer import Phonemizer
+from ..utils.onnx import get_available_providers
 
 # Default OnnxRuntime is way to verbose, only show fatal errors
 # This function may not be available in all onnxruntime builds
@@ -134,15 +135,7 @@ class SpeechSynthesizer:
             phoneme_path (Path): Path to the phoneme-to-ID mapping file. Defaults to PHONEME_TO_ID_PATH.
             speaker_id (int | None): Optional speaker ID for multi-speaker models. Defaults to None.
         """
-        # Get available providers, with fallback for builds without this function
-        if hasattr(ort, "get_available_providers"):
-            providers = ort.get_available_providers()
-            if "TensorrtExecutionProvider" in providers:
-                providers.remove("TensorrtExecutionProvider")
-            if "CoreMLExecutionProvider" in providers:
-                providers.remove("CoreMLExecutionProvider")
-        else:
-            providers = ["CPUExecutionProvider"]
+        providers = get_available_providers()
 
         self.ort_sess = ort.InferenceSession(
             model_path,

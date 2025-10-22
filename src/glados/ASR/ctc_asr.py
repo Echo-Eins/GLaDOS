@@ -9,6 +9,7 @@ import yaml
 
 from ..utils.resources import resource_path
 from .mel_spectrogram import MelSpectrogramCalculator, MelSpectrogramConfig
+from ..utils.onnx import get_available_providers
 
 # Default OnnxRuntime is way to verbose, only show fatal errors
 # This function may not be available in all onnxruntime builds
@@ -54,23 +55,7 @@ class AudioTranscriber:
                 raise ValueError(f"Error parsing YAML file {config_path}: {e}") from e
 
         # 2. Configure ONNX Runtime session
-        # Get available providers, with fallback for builds without this function
-        if hasattr(ort, "get_available_providers"):
-            providers = ort.get_available_providers()
-
-            # Exclude providers known to cause issues or not desired
-            if "TensorrtExecutionProvider" in providers:
-                providers.remove("TensorrtExecutionProvider")
-            if "CoreMLExecutionProvider" in providers:
-                providers.remove("CoreMLExecutionProvider")
-
-            # Prioritize CUDA if available, otherwise CPU
-            if "CUDAExecutionProvider" in providers:
-                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            else:
-                providers = ["CPUExecutionProvider"]
-        else:
-            providers = ["CPUExecutionProvider"]
+        providers = get_available_providers()
 
         session_opts = ort.SessionOptions()
 
