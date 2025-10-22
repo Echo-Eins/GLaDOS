@@ -117,7 +117,13 @@ If you want to use Russian language support with CUDA acceleration:
 
         uv run glados
 
-The CUDA-enabled PyTorch will be automatically used for faster inference. The configuration ensures that torch+cu121 versions are preserved when installing the Russian language pack (gigaam).
+The CUDA-enabled PyTorch (version 2.4.0+cu121) will be automatically used for faster inference.
+
+**Important Notes:**
+- The `cuda` and `cpu` extras are mutually exclusive - use only one at a time
+- For CUDA support, use `--extra cuda --extra ru`
+- For CPU-only support, use `--extra cpu --extra ru`
+- The configuration automatically downloads PyTorch from the CUDA 12.1 index to ensure GPU acceleration works correctly
 
 ## Speech Generation
 You can also get her to say something with:
