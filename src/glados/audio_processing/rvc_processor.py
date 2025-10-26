@@ -100,6 +100,7 @@ class RVCProcessor:
 
         # Initialize RVC inference
         self.rvc = None
+        self._original_pipeline = None  # Store original pipeline for patching
         if INFERRVC_AVAILABLE:
             self._init_inferrvc()
         else:
@@ -153,10 +154,69 @@ class RVCProcessor:
             logger.info(f"Model sample rate: {self.rvc.tgt_sr}Hz, version: {self.rvc.version}")
             logger.info(f"Using {'FP16' if self.is_half else 'FP32'} precision on {self.rvc.config.device}")
 
+            # Apply adaptive t_pad patch ONCE during initialization
+            self._apply_adaptive_pipeline_patch()
+
         except Exception as e:
             logger.error(f"Failed to initialize inferrvc: {e}")
             logger.exception(e)
             self.rvc = None
+
+    def _apply_adaptive_pipeline_patch(self) -> None:
+        """Apply adaptive t_pad patch to inferrvc pipeline.
+
+        This patch is applied ONCE during initialization to avoid creating
+        recursive wrappers. It modifies the pipeline to dynamically reduce
+        t_pad for short audio clips.
+        """
+        try:
+            import inferrvc.pipeline
+
+            # Save original pipeline method (only if not already patched)
+            if self._original_pipeline is None:
+                self._original_pipeline = inferrvc.pipeline.Pipeline.pipeline
+                logger.debug("Saved original inferrvc pipeline method")
+
+            # Create adaptive pipeline wrapper
+            original_func = self._original_pipeline
+
+            def adaptive_pipeline(self, audio, *args, **kwargs):
+                """Patched pipeline that uses adaptive t_pad for short audio."""
+                # Check if audio is a tensor (sometimes inferrvc passes other objects)
+                if not isinstance(audio, torch.Tensor):
+                    # Not audio tensor, just call original
+                    return original_func(self, audio, *args, **kwargs)
+
+                # Calculate adaptive t_pad based on audio length
+                # For reflection padding we need: audio_length > 2*t_pad
+                audio_length = audio.shape[-1]
+                original_t_pad = self.t_pad
+
+                # Use smaller t_pad if audio is too short
+                # Max t_pad is (audio_length - 100) / 2 to ensure padding works
+                if audio_length < 2 * self.t_pad:
+                    self.t_pad = max(100, (audio_length - 100) // 2)
+                    logger.debug(
+                        f"Reduced t_pad from {original_t_pad} to {self.t_pad} "
+                        f"for short audio ({audio_length} samples)"
+                    )
+
+                try:
+                    # Call original pipeline with adjusted t_pad
+                    result = original_func(self, audio, *args, **kwargs)
+                finally:
+                    # Restore original t_pad
+                    self.t_pad = original_t_pad
+
+                return result
+
+            # Apply the patch
+            inferrvc.pipeline.Pipeline.pipeline = adaptive_pipeline
+            logger.info("Applied adaptive t_pad patch to inferrvc pipeline")
+
+        except Exception as e:
+            logger.error(f"Failed to apply adaptive pipeline patch: {e}")
+            logger.exception(e)
 
     def process(
         self,
@@ -205,12 +265,8 @@ class RVCProcessor:
                 audio_tensor = audio_tensor / max_val
                 logger.debug(f"Normalized audio (max={max_val:.3f})")
 
-            # inferrvc uses t_pad for reflection padding which requires audio > 2*t_pad
-            # PROBLEM: t_pad = tgt_sr = 48000, so we need 96000 samples (6 seconds!)
-            # SOLUTION: Dynamically reduce t_pad for short audio instead of adding silence
-            # We'll monkey-patch Pipeline.pipeline() to use adaptive t_pad
-
             # Process with inferrvc
+            # Adaptive t_pad patch is already applied during initialization
             logger.debug(
                 f"Running RVC inference: {self.f0_method}, "
                 f"pitch={self.f0_up_key}, index_rate={self.index_rate}"
@@ -228,51 +284,12 @@ class RVCProcessor:
                 finally:
                     sys.argv = original_argv
 
-            # Monkey-patches needed for inferrvc compatibility:
-            # 1. FP16 compatibility: torchaudio ops only support FP32/FP64
-            # 2. Adaptive t_pad: reduce padding for short audio to avoid errors
+            # FP16 compatibility patches (only when is_half=True)
+            # These patches are applied temporarily for each process() call
             patched_classes = []
             original_methods = {}
             original_resample = None
-            original_pipeline = None
 
-            # Always patch Pipeline for adaptive t_pad (not just FP16 mode)
-            import inferrvc.pipeline
-            original_pipeline = inferrvc.pipeline.Pipeline.pipeline
-
-            def adaptive_pipeline(self, audio, *args, **kwargs):
-                """Patched pipeline that uses adaptive t_pad for short audio."""
-                # Check if audio is a tensor (sometimes inferrvc passes other objects)
-                if not isinstance(audio, torch.Tensor):
-                    # Not audio tensor, just call original
-                    return original_pipeline(self, audio, *args, **kwargs)
-
-                # Calculate adaptive t_pad based on audio length
-                # For reflection padding we need: audio_length > 2*t_pad
-                audio_length = audio.shape[-1]
-                original_t_pad = self.t_pad
-
-                # Use smaller t_pad if audio is too short
-                # Max t_pad is (audio_length - 100) / 2 to ensure padding works
-                if audio_length < 2 * self.t_pad:
-                    self.t_pad = max(100, (audio_length - 100) // 2)
-                    logger.debug(
-                        f"Reduced t_pad from {original_t_pad} to {self.t_pad} "
-                        f"for short audio ({audio_length} samples)"
-                    )
-
-                try:
-                    # Call original pipeline with adjusted t_pad
-                    result = original_pipeline(self, audio, *args, **kwargs)
-                finally:
-                    # Restore original t_pad
-                    self.t_pad = original_t_pad
-
-                return result
-
-            inferrvc.pipeline.Pipeline.pipeline = adaptive_pipeline
-
-            # FP16 compatibility patches (only when is_half=True)
             if self.is_half:
                 import inferrvc.modules
                 import torchaudio.transforms
@@ -344,15 +361,12 @@ class RVCProcessor:
                 output_volume=InferRVC.MATCH_ORIGINAL,  # Match input loudness
             )
 
-            # Restore all original functions if we patched them
-            # Restore Pipeline (always patched)
-            if original_pipeline:
-                inferrvc.pipeline.Pipeline.pipeline = original_pipeline
-
-            # Restore FP16 patches (only if is_half=True)
+            # Restore FP16 patches if we applied them
+            # (adaptive_pipeline patch is permanent and not restored)
             if self.is_half and (original_resample or patched_classes):
                 # Restore ResampleCache
                 if original_resample:
+                    import inferrvc.modules
                     inferrvc.modules.ResampleCache.resample = original_resample
 
                 # Restore all torchaudio transforms
