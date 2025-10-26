@@ -26,7 +26,20 @@ ls -la models/TTS/GLaDOS_ru/
 
 ## Быстрый старт
 
-### Базовое использование
+### Вариант 1: Запуск полной системы GLaDOS на русском
+
+```bash
+# Запуск с русским конфигом
+uv run glados start --config configs/glados_ru_config.yaml
+```
+
+Это запустит полную интерактивную систему:
+- ✓ Распознавание речи (ASR)
+- ✓ LLM для генерации ответов
+- ✓ Русский голос GLaDOS (Silero TTS → RVC → Audio Processing)
+- ✓ Полный аудио пайплайн с EQ/Compressor/Reverb
+
+### Вариант 2: Только синтез речи (в коде)
 
 ```python
 from glados.TTS import get_speech_synthesizer
@@ -42,10 +55,11 @@ audio = tts.generate_speech_audio("Привет! Я GLaDOS.")
 sf.write("output.wav", audio, tts.sample_rate)
 ```
 
-### Запуск примеров
+### Вариант 3: Запуск примеров
 
 ```bash
-python examples/glados_ru_example.py
+# Интерактивные примеры с разными вариантами использования
+uv run python examples/glados_ru_example.py
 ```
 
 ## Компоненты системы

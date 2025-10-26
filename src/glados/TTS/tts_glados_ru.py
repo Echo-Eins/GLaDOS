@@ -92,13 +92,14 @@ class GLaDOSRuSynthesizer:
             self.audio_processor = AudioProcessingPipeline(sample_rate=self.sample_rate)
 
             # Load preset
-            self.preset_manager = PresetManager()
+            presets_dir = resource_path("presets")
+            self.preset_manager = PresetManager(presets_dir=presets_dir)
             try:
                 preset_config = self.preset_manager.load_preset(preset_name)
                 self.audio_processor.from_dict(preset_config)
                 logger.success(f"Loaded preset: {preset_name}")
             except FileNotFoundError:
-                logger.warning(f"Preset '{preset_name}' not found, using default GLaDOS preset")
+                logger.warning(f"Preset '{preset_name}' not found in {presets_dir}, using default GLaDOS preset")
                 self.audio_processor.load_glados_preset()
             except Exception as e:
                 logger.error(f"Failed to load preset: {e}")

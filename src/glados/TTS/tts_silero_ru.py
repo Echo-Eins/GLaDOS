@@ -50,14 +50,14 @@ class SileroRuSynthesizer:
 
         try:
             # Load Silero V4 Russian model
-            self.model, _ = torch.hub.load(
+            model, example_text = torch.hub.load(
                 repo_or_dir='snakers4/silero-models',
                 model='silero_tts',
                 language='ru',
                 speaker='v4_ru'
             )
 
-            self.model = self.model.to(self.device)
+            self.model = model.to(self.device)
             logger.success(f"Silero V4 Russian TTS loaded successfully with speaker '{speaker}'")
 
         except Exception as e:
