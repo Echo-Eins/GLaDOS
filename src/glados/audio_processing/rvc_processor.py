@@ -243,12 +243,16 @@ class RVCProcessor:
                 finally:
                     sys.argv = original_argv
 
-            # inferrvc has a bug: internal resample uses FP16 tensors with FP32 kernel
-            # This causes dtype mismatch in torchaudio.Resample
-            # Workaround: Monkey-patch ResampleCache to convert to FP32 before resample
+            # inferrvc has FP16 compatibility bugs with torchaudio operations:
+            # 1. ResampleCache uses FP16 tensors with FP32 kernel
+            # 2. Loudness transform (for MATCH_ORIGINAL) doesn't support FP16
+            # Workaround: Monkey-patch both to convert FP16 <-> FP32 automatically
             # Only needed when is_half=True (FP16 mode)
             if self.is_half:
                 import inferrvc.modules
+                import torchaudio.transforms
+
+                # Patch 1: ResampleCache for internal resampling
                 original_resample = inferrvc.modules.ResampleCache.resample
 
                 @staticmethod
@@ -268,8 +272,29 @@ class RVCProcessor:
 
                     return result
 
-                # Apply monkey patch
+                # Patch 2: Loudness transform for volume normalization
+                original_loudness_forward = torchaudio.transforms.Loudness.forward
+
+                def patched_loudness_forward(self, waveform):
+                    """Patched Loudness.forward that handles FP16 conversion."""
+                    # Convert to FP32 before loudness calculation
+                    was_half = waveform.dtype == torch.float16
+                    device = waveform.device
+                    if was_half:
+                        waveform = waveform.float()
+
+                    # Call original loudness (will use FP32 operations)
+                    result = original_loudness_forward(self, waveform)
+
+                    # Convert back to FP16 if needed
+                    if was_half and device.type == 'cuda':
+                        result = result.half()
+
+                    return result
+
+                # Apply monkey patches
                 inferrvc.modules.ResampleCache.resample = patched_resample
+                torchaudio.transforms.Loudness.forward = patched_loudness_forward
 
             output_tensor = self.rvc(
                 audio_tensor,
@@ -282,9 +307,10 @@ class RVCProcessor:
                 output_volume=InferRVC.MATCH_ORIGINAL,  # Match input loudness
             )
 
-            # Restore original resample if we patched it
+            # Restore original functions if we patched them
             if self.is_half:
                 inferrvc.modules.ResampleCache.resample = original_resample
+                torchaudio.transforms.Loudness.forward = original_loudness_forward
 
             # Convert back to numpy
             converted_audio = output_tensor.cpu().numpy().astype(np.float32)
