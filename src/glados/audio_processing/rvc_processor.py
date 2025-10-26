@@ -140,9 +140,14 @@ class RVCProcessor:
                 logger.info(f"Attempting auto-detect index: {index_name}")
 
             # Initialize inferrvc RVC model
-            # inferrvc automatically uses FP16 on CUDA for better performance (3x faster)
-            # is_half is controlled via Config, not RVC.__init__ parameter
-            # Just pass the device and inferrvc will configure FP16 automatically
+            # inferrvc Config auto-detects device via torch.cuda.is_available()
+            # We can't pass device to RVC() - it uses Config() internally
+            # Config will use cuda:0 if available, otherwise cpu
+            logger.info(f"Initializing RVC with model={self.model_path}, index={index_str}")
+            logger.info(f"PyTorch CUDA available: {torch.cuda.is_available()}")
+            if torch.cuda.is_available():
+                logger.info(f"CUDA device: {torch.cuda.get_device_name(0)}")
+
             self.rvc = InferRVC(
                 model=str(self.model_path),
                 index=index_str
