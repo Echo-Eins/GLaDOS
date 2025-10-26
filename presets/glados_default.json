@@ -37,6 +37,6 @@
     "pre_delay_ms": 12,
     "mix": 0.20,
     "damping": 0.88,
-    "room_size": 0.05
+    "room_size": 0.01
   }
 }
