@@ -243,6 +243,34 @@ class RVCProcessor:
                 finally:
                     sys.argv = original_argv
 
+            # inferrvc has a bug: internal resample uses FP16 tensors with FP32 kernel
+            # This causes dtype mismatch in torchaudio.Resample
+            # Workaround: Monkey-patch ResampleCache to convert to FP32 before resample
+            # Only needed when is_half=True (FP16 mode)
+            if self.is_half:
+                import inferrvc.modules
+                original_resample = inferrvc.modules.ResampleCache.resample
+
+                @staticmethod
+                def patched_resample(fromto, audio, deviceto):
+                    """Patched resample that handles FP16/FP32 conversion."""
+                    # Convert to FP32 before resample
+                    was_half = audio.dtype == torch.float16
+                    if was_half:
+                        audio = audio.float()
+
+                    # Call original resample (will use FP32 kernel)
+                    result = original_resample(fromto, audio, deviceto)
+
+                    # Convert back to FP16 if needed
+                    if was_half and deviceto.startswith('cuda'):
+                        result = result.half()
+
+                    return result
+
+                # Apply monkey patch
+                inferrvc.modules.ResampleCache.resample = patched_resample
+
             output_tensor = self.rvc(
                 audio_tensor,
                 f0_up_key=self.f0_up_key,
@@ -253,6 +281,10 @@ class RVCProcessor:
                 output_device='cpu',  # Always return on CPU
                 output_volume=InferRVC.MATCH_ORIGINAL,  # Match input loudness
             )
+
+            # Restore original resample if we patched it
+            if self.is_half:
+                inferrvc.modules.ResampleCache.resample = original_resample
 
             # Convert back to numpy
             converted_audio = output_tensor.cpu().numpy().astype(np.float32)
