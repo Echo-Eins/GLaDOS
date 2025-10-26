@@ -22,23 +22,21 @@ class SileroRuSynthesizer:
         self,
         speaker: str = "xenia",
         sample_rate: int = 48000,
-        put_accent: bool = True,
-        put_yo: bool = True,
         device: str | None = None,
     ):
         """Initialize Silero Russian TTS synthesizer.
 
         Args:
             speaker: Speaker name (default: 'xenia')
-            sample_rate: Audio sample rate (24000 or 48000)
-            put_accent: Enable automatic stress placement
-            put_yo: Convert 'е' to 'ё' where appropriate
+                Available: 'aidar', 'baya', 'kseniya', 'xenia', 'eugene', 'random'
+            sample_rate: Audio sample rate (8000, 24000, or 48000)
             device: Device to run model on ('cpu', 'cuda', or None for auto)
+
+        Note:
+            V4 model has automatic stress placement (put_accent) built-in.
         """
         self.speaker = speaker
         self.sample_rate = sample_rate
-        self.put_accent = put_accent
-        self.put_yo = put_yo
 
         # Determine device
         if device is None:
@@ -50,6 +48,7 @@ class SileroRuSynthesizer:
 
         try:
             # Load Silero V4 Russian model
+            # Returns: (model, example_text)
             model, example_text = torch.hub.load(
                 repo_or_dir='snakers4/silero-models',
                 model='silero_tts',
@@ -57,8 +56,13 @@ class SileroRuSynthesizer:
                 speaker='v4_ru'
             )
 
-            self.model = model.to(self.device)
-            logger.success(f"Silero V4 Russian TTS loaded successfully with speaker '{speaker}'")
+            # Move model to device (in-place operation)
+            model.to(self.device)
+
+            # Save reference to model
+            self.model = model
+
+            logger.success(f"Silero V4 Russian TTS loaded successfully with speaker '{speaker}' on {self.device}")
 
         except Exception as e:
             logger.error(f"Failed to load Silero TTS model: {e}")
@@ -78,14 +82,13 @@ class SileroRuSynthesizer:
             return np.array([], dtype=np.float32)
 
         try:
-            # Generate audio using Silero
+            # Generate audio using Silero V4
+            # Note: V4 has automatic stress (put_accent) built-in
             with torch.no_grad():
                 audio_tensor = self.model.apply_tts(
                     text=text,
                     speaker=self.speaker,
-                    sample_rate=self.sample_rate,
-                    put_accent=self.put_accent,
-                    put_yo=self.put_yo
+                    sample_rate=self.sample_rate
                 )
 
             # Convert to numpy array

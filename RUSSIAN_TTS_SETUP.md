@@ -66,10 +66,9 @@ uv run python examples/glados_ru_example.py
 
 ### 1. Silero V4 Russian TTS
 - Модель: v4_ru
-- Спикер: xenia
-- Sample Rate: 48000 Hz
-- Автоматическая расстановка ударений (put_accent=True)
-- Конверсия е/ё (put_yo=True)
+- Спикер: xenia (также доступны: aidar, baya, kseniya, eugene, random)
+- Sample Rate: 48000 Hz (также доступны: 8000, 24000)
+- Автоматическая расстановка ударений (встроена в V4)
 
 ### 2. RVC Voice Conversion
 - Модель: ru_glados.pth
