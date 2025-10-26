@@ -1,8 +1,10 @@
 import argparse
 import asyncio
+from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 import sys
+from typing import Iterator
 
 import httpx
 from rich import print as rprint
@@ -14,6 +16,21 @@ import sounddevice as sd  # type: ignore
 # may try to parse sys.argv during import, conflicting with our CLI.
 # Import only resource_path which is safe (no heavy dependencies)
 from .utils.resources import resource_path
+
+
+@contextmanager
+def _protect_argv() -> Iterator[None]:
+    """Context manager to protect sys.argv during imports.
+
+    Fairseq (dependency of inferrvc/gigaam) tries to parse sys.argv during import.
+    This context manager temporarily clears sys.argv to prevent conflicts.
+    """
+    original_argv = sys.argv.copy()
+    sys.argv = [sys.argv[0]] if sys.argv else ['glados']
+    try:
+        yield
+    finally:
+        sys.argv = original_argv
 
 # Type aliases for clarity
 type FileHash = str
@@ -179,9 +196,10 @@ def say(text: str, config_path: str | Path = "glados_config.yaml") -> None:
     Example:
         say("Hello, world!")  # Speaks the text using GLaDOS voice
     """
-    # Deferred import to avoid argparse conflicts
-    from .TTS import tts_glados
-    from .utils import spoken_text_converter as stc
+    # Deferred import with argv protection to avoid argparse conflicts
+    with _protect_argv():
+        from .TTS import tts_glados
+        from .utils import spoken_text_converter as stc
 
     glados_tts = tts_glados.SpeechSynthesizer()
     converter = stc.SpokenTextConverter()
@@ -213,8 +231,9 @@ def start(config_path: str | Path = "glados_config.yaml", *, language: str | Non
         start()  # Uses default configuration file
         start("/path/to/custom/config.yaml")  # Uses a custom configuration file
     """
-    # Deferred import to avoid argparse conflicts
-    from .core.engine import Glados, GladosConfig
+    # Deferred import with argv protection to avoid argparse conflicts
+    with _protect_argv():
+        from .core.engine import Glados, GladosConfig
 
     glados_config = GladosConfig.from_yaml(str(config_path))
 
@@ -234,13 +253,12 @@ def tui(config_path: str | Path = "glados_config.yaml") -> None:
     This function initializes the GLaDOS TUI application, which provides decorative
     interface elements for voice interactions.
     """
-
-    import sys
-
-    import glados.tui as tui
+    # Deferred import with argv protection to avoid argparse conflicts
+    with _protect_argv():
+        import glados.tui as tui_module
 
     try:
-        app = tui.GladosUI()
+        app = tui_module.GladosUI()
         app.run()
     except KeyboardInterrupt:
         sys.exit()
