@@ -242,6 +242,11 @@ class RVCProcessor:
 
             def adaptive_pipeline(self, audio, *args, **kwargs):
                 """Patched pipeline that uses adaptive t_pad for short audio."""
+                # Check if audio is a tensor (sometimes inferrvc passes other objects)
+                if not isinstance(audio, torch.Tensor):
+                    # Not audio tensor, just call original
+                    return original_pipeline(self, audio, *args, **kwargs)
+
                 # Calculate adaptive t_pad based on audio length
                 # For reflection padding we need: audio_length > 2*t_pad
                 audio_length = audio.shape[-1]
