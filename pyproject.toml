@@ -43,12 +43,15 @@ ru = ["gigaam==0.1.0"]
 ru-full = [
     "gigaam==0.1.0",
     "librosa>=0.10.0",
-    "faiss-cpu>=1.7.4",
     "pyworld>=0.3.2",
     "praat-parselmouth>=0.4.2",
     "resampy>=0.4.2",
     "torchcrepe>=0.0.20",
-    "rvc-python>=0.1.0",
+]
+rvc = [
+    "faiss-cpu>=1.8.0",
+    "inferrvc @ https://github.com/CircuitCM/RVC-inference/raw/main/dist/inferrvc-1.0-py3-none-any.whl",
+    "fairseq @ https://github.com/One-sixth/fairseq/archive/main.zip ; python_version >= '3.11'",
 ]
 
 [project.scripts]
