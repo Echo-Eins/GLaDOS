@@ -22,9 +22,14 @@ Glados:
 # Русская версия GLaDOS с полным аудио-пайплайном
 #
 # Установка:
-#   uv sync --extra cuda --extra ru-full  # для CUDA
+#   uv sync --extra cuda --extra ru-full --extra rvc  # для CUDA
 #   uv sync --extra cpu --extra ru-full   # для CPU
 #
+#   uv pip install -e ".[ru-full,rvc,cuda]"
+#
+## Проверка
+#   uv run python -c "from inferrvc import RVC; print('✅ inferrvc OK')"
+
 # Запуск:
 #   uv run glados start --config configs/glados_ru_config.yaml
 #
