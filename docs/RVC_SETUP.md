@@ -7,7 +7,7 @@ This guide explains how to set up and use RVC (Retrieval-based Voice Conversion)
 The GLaDOS Russian TTS pipeline now includes full RVC voice conversion support:
 
 1. **Silero TTS** - Generates base Russian speech
-2. **RVC Voice Conversion** - Converts to GLaDOS voice
+2. **RVC Voice Conversion** - Converts to GLaDOS voice using inferrvc
 3. **Audio Processing** - Applies EQ, compression, and reverb
 
 ## Installation
@@ -24,36 +24,47 @@ uv pip install -e ".[ru-full,cuda]"
 pip install -e ".[ru-full,cuda]"
 ```
 
-### Full RVC Installation (Python 3.11 required)
+### Full RVC Installation (Python 3.12 supported!)
 
-**⚠️ Important:** Full RVC support requires **Python 3.11** due to faiss-cpu limitations.
+**🎉 Good News:** Full RVC now works with **Python 3.12**!
 
-If you're using **Python 3.12**, you have two options:
+We use `inferrvc` (CircuitCM/RVC-inference), which supports Python 3.8-3.12.
 
-#### Option 1: Use without RVC (Recommended for Python 3.12)
-The system will automatically fall back to `SimpleRVCProcessor` which does basic pitch shifting.
-This is installed by default with `ru-full` - no additional steps needed!
-
-#### Option 2: Install RVC (Python 3.11 only)
-Create a Python 3.11 environment and install RVC dependencies:
+#### Install RVC (Python 3.11 or 3.12)
 
 ```bash
-# Create Python 3.11 environment
-conda create -n glados python=3.11
-conda activate glados
-
-# Install with RVC support
+# Using uv (recommended)
 uv pip install -e ".[ru-full,rvc,cuda]"
 
 # Or using pip
 pip install -e ".[ru-full,rvc,cuda]"
 ```
 
-Additional RVC dependencies:
-- `faiss-cpu==1.7.3` - Feature index search (Python 3.11 only)
-- `rvc-python>=0.1.0` - RVC inference library
+This will install:
+- `inferrvc` - High-performance RVC inference library
+- `faiss-cpu>=1.8.0` - Feature index search (Python 3.12 compatible!)
+- `fairseq` fork - For Python 3.11+ compatibility (auto-installed)
 
-Standard dependencies (installed with ru-full):
+### What's Different?
+
+**Old setup (rvc-python):**
+- ❌ Only Python 3.11 (faiss-cpu 1.7.3 limitation)
+- ❌ Complex API with temporary files
+- ❌ Slower inference
+
+**New setup (inferrvc):**
+- ✅ Python 3.8-3.12 support
+- ✅ Direct torch.Tensor processing
+- ✅ Optimized for performance
+- ✅ Includes RMVPE (best pitch estimator)
+- ✅ Fewer dependencies
+
+RVC dependencies (installed with `[rvc]`):
+- `inferrvc` - High-performance RVC inference
+- `faiss-cpu>=1.8.0` - Feature search (Python 3.12 compatible!)
+- `fairseq` fork - For Python 3.11+ (auto-installed)
+
+Standard dependencies (installed with `ru-full`):
 - `librosa` - Audio processing
 - `pyworld` - F0 extraction
 - `praat-parselmouth` - Pitch analysis
@@ -119,10 +130,11 @@ converted = rvc.process(audio, input_sample_rate=48000)
 
 ### F0 Extraction Methods
 
-- **harvest** - Robust, slower but accurate (default)
+- **rmvpe** - Best quality, good performance (default, recommended)
+- **harvest** - Robust, slower but accurate
 - **pm** - Parselmouth, fast and good for real-time
 - **crepe** - Deep learning based, very accurate but slow
-- **rmvpe** - Custom RVC method, good balance
+- **dio** - Fast but lower quality
 
 ### Parameter Tuning Guide
 
@@ -175,13 +187,13 @@ Total RTF (Real-Time Factor) is typically 1.5-2.5x on GPU.
 3. **Disable index**: Set `index_rate=0` if quality is acceptable
 4. **Batch processing**: Process multiple sentences together
 
-## Fallback Mode (Default for Python 3.12)
+## Fallback Mode (Without RVC)
 
-If `rvc-python` is not installed, the system **automatically** falls back to `SimpleRVCProcessor`:
+If `inferrvc` is not installed, the system **automatically** falls back to `SimpleRVCProcessor`:
 
 - ✅ **Basic pitch shifting** - Adjusts pitch without full voice conversion
 - ✅ **Fast processing** - Much faster than full RVC
-- ✅ **No additional dependencies** - Works with Python 3.12
+- ✅ **No additional dependencies** - Works immediately
 - ✅ **Good for testing** - Quick iteration on TTS
 
 **What you get without RVC:**
@@ -190,34 +202,41 @@ If `rvc-python` is not installed, the system **automatically** falls back to `Si
 - Audio processing (EQ, compression, reverb) is still applied
 - Result sounds good but won't have full GLaDOS voice conversion
 
-**What you get with RVC:**
-- Full voice conversion to GLaDOS timbre
-- Feature retrieval for better quality
-- Advanced pitch processing
-- More authentic GLaDOS sound
+**What you get with full RVC (inferrvc):**
+- ✨ Full voice conversion to GLaDOS timbre
+- ✨ Feature retrieval for better quality
+- ✨ RMVPE pitch extraction (best quality)
+- ✨ More authentic GLaDOS sound
+- ✨ Works on Python 3.12!
 
 ## Troubleshooting
 
-### "rvc-python not available"
-This is expected if you're using Python 3.12. The system will use `SimpleRVCProcessor` instead.
-
-To use full RVC:
-- Option 1: Switch to Python 3.11 and install with `.[rvc]`
-- Option 2: Continue with SimpleRVCProcessor (still produces good results)
+### "inferrvc not available"
+Install RVC dependencies:
+```bash
+uv pip install -e ".[rvc]"
+```
 
 ### "FAISS not available"
-Only needed for full RVC. If you see this warning but RVC is working, it means index search is disabled (not critical).
+This means faiss-cpu is not installed. Install with:
+```bash
+pip install "faiss-cpu>=1.8.0"
+```
+
+### "fairseq" installation fails on Python 3.11+
+This should install automatically, but if it fails:
+```bash
+pip install https://github.com/One-sixth/fairseq/archive/main.zip
+```
 
 ### "pyworld not available"
 Install with: `pip install pyworld` - needed for F0 extraction
 
-### Python 3.12 + full RVC needed?
-You must use Python 3.11:
-```bash
-conda create -n glados python=3.11
-conda activate glados
-pip install -e ".[ru-full,rvc,cuda]"
-```
+### RVC works but quality is poor
+Try adjusting parameters:
+- Increase `index_rate` (0.7 → 0.85)
+- Try different `f0_method` ('rmvpe' is usually best)
+- Adjust `protect` (0.33 → 0.4)
 
 ### RVC output sounds wrong
 - Check model version (v1 vs v2)

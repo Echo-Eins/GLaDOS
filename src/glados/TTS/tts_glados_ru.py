@@ -72,13 +72,12 @@ class GLaDOSRuSynthesizer:
                 self.rvc = create_rvc_processor(
                     model_path=self.model_path,
                     index_path=self.index_path,
-                    simple_mode=False,  # Use full RVC mode
+                    simple_mode=False,  # Use full RVC mode with inferrvc
                     device=device,
-                    f0_method="harvest",  # F0 extraction method
+                    f0_method="rmvpe",  # F0 extraction method (rmvpe is best)
                     f0_up_key=0,  # Pitch shift (0 = no shift)
                     index_rate=0.75,  # Feature index influence
                     filter_radius=3,  # Median filter radius
-                    rms_mix_rate=0.25,  # RMS envelope mixing
                     protect=0.33,  # Consonant protection
                 )
                 logger.success("RVC processor initialized")

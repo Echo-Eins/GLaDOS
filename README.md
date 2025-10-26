@@ -127,28 +127,30 @@ The CUDA-enabled PyTorch (version 2.4.0+cu121) will be automatically used for fa
 
 For enhanced Russian GLaDOS voice quality, you can optionally install RVC (Retrieval-based Voice Conversion):
 
-**⚠️ Python Version Requirement:** RVC requires **Python 3.11** due to dependency limitations.
+**🎉 Good News:** RVC now works with **Python 3.12**! We use `inferrvc` (CircuitCM/RVC-inference).
 
-### Without RVC (Default - Works with Python 3.12)
+### Without RVC (Default)
 The system automatically uses `SimpleRVCProcessor` with basic pitch shifting. This still produces good results!
 
 ```bash
-# Standard installation (works with Python 3.12)
+# Standard installation
 python scripts/install.py --extra cuda --extra ru-full
 ```
 
-### With Full RVC (Python 3.11 only)
-For authentic GLaDOS voice conversion:
+### With Full RVC (Python 3.11+ or 3.12)
+For authentic GLaDOS voice conversion with RMVPE pitch extraction:
 
 ```bash
-# Using Python 3.11 environment
+# Install with RVC support
 python scripts/install.py --extra cuda --extra ru-full --extra rvc
 ```
 
 **What RVC adds:**
-- Full voice conversion to GLaDOS timbre
-- Feature retrieval for better quality
-- Advanced pitch processing
+- ✨ Full voice conversion to GLaDOS timbre
+- ✨ Feature retrieval for better quality
+- ✨ RMVPE pitch extraction (best quality)
+- ✨ Advanced pitch processing
+- ✨ Works on Python 3.12!
 
 **Without RVC you still get:**
 - High-quality Silero Russian TTS

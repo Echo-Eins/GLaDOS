@@ -2,6 +2,9 @@
 
 This module handles voice conversion using pre-trained RVC models
 to transform input speech into GLaDOS-like voice.
+
+Uses inferrvc (CircuitCM/RVC-inference) for high-performance RVC inference
+with Python 3.12 support.
 """
 
 import torch
@@ -9,8 +12,6 @@ import numpy as np
 from numpy.typing import NDArray
 from pathlib import Path
 from loguru import logger
-import tempfile
-import os
 
 try:
     import soundfile as sf
@@ -27,12 +28,12 @@ except ImportError:
     logger.warning("FAISS not available. RVC index search will be disabled.")
 
 try:
-    from rvc_python.infer import RVCInference as RVCPythonInference
-    RVC_PYTHON_AVAILABLE = True
-    logger.info("rvc-python library detected")
+    from inferrvc import RVC as InferRVC
+    INFERRVC_AVAILABLE = True
+    logger.info("inferrvc library detected")
 except ImportError:
-    RVC_PYTHON_AVAILABLE = False
-    logger.warning("rvc-python not available. RVC will use fallback mode.")
+    INFERRVC_AVAILABLE = False
+    logger.warning("inferrvc not available. RVC will use fallback mode.")
 
 try:
     import librosa
@@ -46,7 +47,7 @@ class RVCProcessor:
     """RVC voice conversion processor for GLaDOS voice.
 
     Converts input audio to GLaDOS voice using pre-trained RVC model.
-    Uses rvc-python library if available, otherwise falls back to basic processing.
+    Uses inferrvc library for high-performance RVC inference.
     """
 
     def __init__(
@@ -54,11 +55,10 @@ class RVCProcessor:
         model_path: Path | str,
         index_path: Path | str | None = None,
         device: str | None = None,
-        f0_method: str = "harvest",
+        f0_method: str = "rmvpe",
         f0_up_key: int = 0,
         index_rate: float = 0.75,
         filter_radius: int = 3,
-        rms_mix_rate: float = 0.25,
         protect: float = 0.33,
     ):
         """Initialize RVC processor.
@@ -67,11 +67,10 @@ class RVCProcessor:
             model_path: Path to RVC model (.pth file)
             index_path: Path to feature index (.index file)
             device: Device to run on ('cpu', 'cuda', or None for auto)
-            f0_method: F0 extraction method ('harvest', 'pm', 'dio', 'crepe', 'rmvpe')
-            f0_up_key: Pitch shift in semitones
+            f0_method: F0 extraction method ('rmvpe', 'harvest', 'pm', 'dio', 'crepe')
+            f0_up_key: Pitch shift in semitones (-12 to +12)
             index_rate: Feature index influence (0.0 to 1.0)
             filter_radius: Median filter radius for F0 smoothing (0-7)
-            rms_mix_rate: RMS envelope mixing rate (0.0 to 1.0)
             protect: Consonant protection (0.0 to 0.5)
         """
         self.model_path = Path(model_path)
@@ -80,7 +79,6 @@ class RVCProcessor:
         self.f0_up_key = f0_up_key
         self.index_rate = index_rate
         self.filter_radius = filter_radius
-        self.rms_mix_rate = rms_mix_rate
         self.protect = protect
 
         # Determine device
@@ -97,49 +95,39 @@ class RVCProcessor:
 
         # Initialize RVC inference
         self.rvc = None
-        if RVC_PYTHON_AVAILABLE:
-            self._init_rvc_python()
+        if INFERRVC_AVAILABLE:
+            self._init_inferrvc()
         else:
             logger.warning("RVC will run in fallback mode (no voice conversion)")
 
         logger.success("RVC processor initialized")
 
-    def _init_rvc_python(self) -> None:
-        """Initialize rvc-python inference engine."""
+    def _init_inferrvc(self) -> None:
+        """Initialize inferrvc inference engine."""
         try:
-            logger.info("Initializing rvc-python inference...")
-            self.rvc = RVCPythonInference(device=self.device)
+            logger.info("Initializing inferrvc inference...")
 
-            # Load model with index
-            logger.info(f"Loading RVC model: {self.model_path}")
-            model_version = "v2"  # May need to detect from model
-            index_path_str = str(self.index_path) if self.index_path and self.index_path.exists() else ""
-
-            if index_path_str:
+            # Determine index path
+            if self.index_path and self.index_path.exists():
+                index_str = str(self.index_path)
                 logger.info(f"Using feature index: {self.index_path}")
             else:
-                logger.warning("No feature index provided")
+                # inferrvc can auto-detect index with same name as model
+                index_name = self.model_path.stem  # filename without .pth
+                index_str = index_name
+                logger.info(f"Attempting auto-detect index: {index_name}")
 
-            self.rvc.load_model(
-                model_path_or_name=str(self.model_path),
-                version=model_version,
-                index_path=index_path_str
+            # Initialize inferrvc RVC model
+            self.rvc = InferRVC(
+                model=str(self.model_path),
+                index=index_str
             )
 
-            # Set parameters
-            self.rvc.set_params(
-                f0up_key=self.f0_up_key,
-                f0method=self.f0_method,
-                index_rate=self.index_rate,
-                filter_radius=self.filter_radius,
-                rms_mix_rate=self.rms_mix_rate,
-                protect=self.protect,
-            )
-
-            logger.success("rvc-python initialized successfully")
+            logger.success(f"inferrvc initialized successfully: {self.rvc.name}")
+            logger.info(f"Model sample rate: {self.rvc.tgt_sr}Hz, version: {self.rvc.version}")
 
         except Exception as e:
-            logger.error(f"Failed to initialize rvc-python: {e}")
+            logger.error(f"Failed to initialize inferrvc: {e}")
             logger.exception(e)
             self.rvc = None
 
@@ -168,43 +156,60 @@ class RVCProcessor:
         try:
             logger.debug(f"RVC processing: {len(audio)/input_sample_rate:.2f}s audio")
 
-            # Use temporary files for RVC processing
-            with tempfile.TemporaryDirectory() as tmpdir:
-                input_path = Path(tmpdir) / "input.wav"
-                output_path = Path(tmpdir) / "output.wav"
+            # Convert to torch tensor
+            audio_tensor = torch.from_numpy(audio).float()
 
-                # Write input audio
-                if not SOUNDFILE_AVAILABLE:
-                    logger.error("soundfile not available, cannot process audio")
-                    return audio
+            # Resample to 16kHz (required by RVC)
+            if input_sample_rate != 16000:
+                import torchaudio
+                resampler = torchaudio.transforms.Resample(
+                    orig_freq=input_sample_rate,
+                    new_freq=16000
+                )
+                audio_tensor = resampler(audio_tensor)
+                logger.debug(f"Resampled from {input_sample_rate}Hz to 16kHz")
 
-                sf.write(input_path, audio, input_sample_rate)
+            # Normalize if needed
+            max_val = audio_tensor.abs().max()
+            if max_val > 1.0:
+                audio_tensor = audio_tensor / max_val
+                logger.debug(f"Normalized audio (max={max_val:.3f})")
 
-                # Process with RVC
-                logger.debug(f"Running RVC inference: {self.f0_method}, pitch={self.f0_up_key}")
-                self.rvc.infer_file(
-                    input_path=str(input_path),
-                    output_path=str(output_path),
+            # Process with inferrvc
+            logger.debug(
+                f"Running RVC inference: {self.f0_method}, "
+                f"pitch={self.f0_up_key}, index_rate={self.index_rate}"
+            )
+
+            output_tensor = self.rvc(
+                audio_tensor,
+                f0_up_key=self.f0_up_key,
+                f0_method=self.f0_method,
+                index_rate=self.index_rate,
+                filter_radius=self.filter_radius,
+                protect=self.protect,
+                output_device='cpu',  # Always return on CPU
+                output_volume=InferRVC.MATCH_ORIGINAL,  # Match input loudness
+            )
+
+            # Convert back to numpy
+            converted_audio = output_tensor.cpu().numpy().astype(np.float32)
+
+            # Get output sample rate from inferrvc (default 44100)
+            output_sr = getattr(self.rvc, 'outputfreq', 44100)
+            logger.debug(f"RVC output: {len(converted_audio)/output_sr:.2f}s at {output_sr}Hz")
+
+            # Resample to match input sample rate if needed
+            if output_sr != input_sample_rate and LIBROSA_AVAILABLE:
+                logger.debug(f"Resampling from {output_sr}Hz to {input_sample_rate}Hz")
+                converted_audio = librosa.resample(
+                    converted_audio,
+                    orig_sr=output_sr,
+                    target_sr=input_sample_rate
                 )
 
-                # Read result
-                if output_path.exists():
-                    converted_audio, sr = sf.read(output_path, dtype='float32')
-                    logger.debug(f"RVC conversion complete: {len(converted_audio)/sr:.2f}s")
-
-                    # Resample if needed
-                    if sr != input_sample_rate and LIBROSA_AVAILABLE:
-                        logger.debug(f"Resampling from {sr}Hz to {input_sample_rate}Hz")
-                        converted_audio = librosa.resample(
-                            converted_audio,
-                            orig_sr=sr,
-                            target_sr=input_sample_rate
-                        )
-
-                    return converted_audio.astype(np.float32)
-                else:
-                    logger.error("RVC output file not created")
-                    return audio
+            logger.debug(f"RVC conversion complete: {len(converted_audio)/input_sample_rate:.2f}s")
+            return converted_audio
 
         except Exception as e:
             logger.error(f"RVC processing failed: {e}")
@@ -217,7 +222,6 @@ class RVCProcessor:
         f0_method: str | None = None,
         index_rate: float | None = None,
         filter_radius: int | None = None,
-        rms_mix_rate: float | None = None,
         protect: float | None = None,
     ) -> None:
         """Update RVC parameters.
@@ -227,7 +231,6 @@ class RVCProcessor:
             f0_method: F0 extraction method
             index_rate: Feature index influence
             filter_radius: Median filter radius
-            rms_mix_rate: RMS envelope mixing rate
             protect: Consonant protection
         """
         if f0_up_key is not None:
@@ -238,22 +241,10 @@ class RVCProcessor:
             self.index_rate = index_rate
         if filter_radius is not None:
             self.filter_radius = filter_radius
-        if rms_mix_rate is not None:
-            self.rms_mix_rate = rms_mix_rate
         if protect is not None:
             self.protect = protect
 
-        # Update RVC parameters if available
-        if self.rvc is not None and hasattr(self.rvc, 'set_params'):
-            self.rvc.set_params(
-                f0up_key=self.f0_up_key,
-                f0method=self.f0_method,
-                index_rate=self.index_rate,
-                filter_radius=self.filter_radius,
-                rms_mix_rate=self.rms_mix_rate,
-                protect=self.protect,
-            )
-            logger.debug("RVC parameters updated")
+        logger.debug("RVC parameters updated")
 
 
 class SimpleRVCProcessor:
@@ -282,7 +273,7 @@ class SimpleRVCProcessor:
 
         logger.warning(
             "SimpleRVCProcessor initialized - this only does basic pitch shifting, "
-            "not real voice conversion. Install rvc-python for full RVC support."
+            "not real voice conversion. Install inferrvc for full RVC support."
         )
 
     def process(
@@ -337,9 +328,9 @@ def create_rvc_processor(
     Returns:
         RVC processor instance
     """
-    if simple_mode or not RVC_PYTHON_AVAILABLE:
+    if simple_mode or not INFERRVC_AVAILABLE:
         if not simple_mode:
-            logger.warning("rvc-python not available, using simple mode")
+            logger.warning("inferrvc not available, using simple mode")
         return SimpleRVCProcessor(
             model_path,
             index_path,
