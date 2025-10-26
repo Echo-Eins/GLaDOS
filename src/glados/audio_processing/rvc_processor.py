@@ -114,8 +114,18 @@ class RVCProcessor:
 
             # Lazy import inferrvc HERE to avoid argparse conflict
             # inferrvc has argparse in Config.__init__ that runs on import
-            from inferrvc import RVC as InferRVC
-            self.InferRVC = InferRVC  # Store class reference
+            # and tries to parse sys.argv, which contains GLaDOS arguments!
+            # Solution: Temporarily clear sys.argv during import
+            import sys
+            original_argv = sys.argv.copy()
+            sys.argv = [sys.argv[0]]  # Keep only script name
+
+            try:
+                from inferrvc import RVC as InferRVC
+                self.InferRVC = InferRVC  # Store class reference
+            finally:
+                # Restore original argv
+                sys.argv = original_argv
 
             # Determine index path
             if self.index_path and self.index_path.exists():
@@ -195,7 +205,13 @@ class RVCProcessor:
             InferRVC = getattr(self, 'InferRVC', None)
             if InferRVC is None:
                 # Fallback: import if not already imported (shouldn't happen)
-                from inferrvc import RVC as InferRVC
+                import sys
+                original_argv = sys.argv.copy()
+                sys.argv = [sys.argv[0]]
+                try:
+                    from inferrvc import RVC as InferRVC
+                finally:
+                    sys.argv = original_argv
 
             output_tensor = self.rvc(
                 audio_tensor,
