@@ -9,9 +9,10 @@ from rich import print as rprint
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn
 import sounddevice as sd  # type: ignore
 
-from .core.engine import Glados, GladosConfig
-from .TTS import tts_glados
-from .utils import spoken_text_converter as stc
+# IMPORTANT: Deferred imports to avoid argparse conflicts!
+# Do NOT import glados modules here - fairseq and other dependencies
+# may try to parse sys.argv during import, conflicting with our CLI.
+# Import only resource_path which is safe (no heavy dependencies)
 from .utils.resources import resource_path
 
 # Type aliases for clarity
@@ -178,6 +179,10 @@ def say(text: str, config_path: str | Path = "glados_config.yaml") -> None:
     Example:
         say("Hello, world!")  # Speaks the text using GLaDOS voice
     """
+    # Deferred import to avoid argparse conflicts
+    from .TTS import tts_glados
+    from .utils import spoken_text_converter as stc
+
     glados_tts = tts_glados.SpeechSynthesizer()
     converter = stc.SpokenTextConverter()
     converted_text = converter.text_to_spoken(text)
@@ -208,6 +213,9 @@ def start(config_path: str | Path = "glados_config.yaml", *, language: str | Non
         start()  # Uses default configuration file
         start("/path/to/custom/config.yaml")  # Uses a custom configuration file
     """
+    # Deferred import to avoid argparse conflicts
+    from .core.engine import Glados, GladosConfig
+
     glados_config = GladosConfig.from_yaml(str(config_path))
 
     if language:

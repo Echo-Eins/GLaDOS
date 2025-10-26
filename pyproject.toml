@@ -131,7 +131,8 @@ strict = true
 [[tool.uv.index]]
 name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"
-explicit = true
+# Note: Removed 'explicit = true' to allow uv to use this index automatically
+# when torch/torchaudio/torchvision are specified in [tool.uv.sources]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu121" }
