@@ -17,6 +17,7 @@ dependencies = [
     "pydantic>=2.10.6",
     "httpx>=0.28.1",
     "rich>=14.0.0",
+    "scipy>=1.11.0",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +40,11 @@ dev = [
 ]
 api = ["litestar[standard,structlog]>=2.15.1"]
 ru = ["gigaam==0.1.0"]
+ru-full = [
+    "gigaam==0.1.0",
+    "librosa>=0.10.0",
+    "faiss-cpu>=1.7.4",
+]
 
 [project.scripts]
 glados = "glados.cli:main"
