@@ -9,20 +9,44 @@ import numpy as np
 from numpy.typing import NDArray
 from pathlib import Path
 from loguru import logger
+import tempfile
+import os
 
 try:
-    # Try to import RVC dependencies
+    import soundfile as sf
+    SOUNDFILE_AVAILABLE = True
+except ImportError:
+    SOUNDFILE_AVAILABLE = False
+    logger.warning("soundfile not available. RVC processing will be limited.")
+
+try:
     import faiss
     FAISS_AVAILABLE = True
 except ImportError:
     FAISS_AVAILABLE = False
     logger.warning("FAISS not available. RVC index search will be disabled.")
 
+try:
+    from rvc_python.infer import RVCInference as RVCPythonInference
+    RVC_PYTHON_AVAILABLE = True
+    logger.info("rvc-python library detected")
+except ImportError:
+    RVC_PYTHON_AVAILABLE = False
+    logger.warning("rvc-python not available. RVC will use fallback mode.")
+
+try:
+    import librosa
+    LIBROSA_AVAILABLE = True
+except ImportError:
+    LIBROSA_AVAILABLE = False
+    logger.warning("librosa not available")
+
 
 class RVCProcessor:
     """RVC voice conversion processor for GLaDOS voice.
 
     Converts input audio to GLaDOS voice using pre-trained RVC model.
+    Uses rvc-python library if available, otherwise falls back to basic processing.
     """
 
     def __init__(
@@ -33,6 +57,9 @@ class RVCProcessor:
         f0_method: str = "harvest",
         f0_up_key: int = 0,
         index_rate: float = 0.75,
+        filter_radius: int = 3,
+        rms_mix_rate: float = 0.25,
+        protect: float = 0.33,
     ):
         """Initialize RVC processor.
 
@@ -40,75 +67,81 @@ class RVCProcessor:
             model_path: Path to RVC model (.pth file)
             index_path: Path to feature index (.index file)
             device: Device to run on ('cpu', 'cuda', or None for auto)
-            f0_method: F0 extraction method ('harvest', 'pm', 'dio', 'crepe')
+            f0_method: F0 extraction method ('harvest', 'pm', 'dio', 'crepe', 'rmvpe')
             f0_up_key: Pitch shift in semitones
             index_rate: Feature index influence (0.0 to 1.0)
+            filter_radius: Median filter radius for F0 smoothing (0-7)
+            rms_mix_rate: RMS envelope mixing rate (0.0 to 1.0)
+            protect: Consonant protection (0.0 to 0.5)
         """
         self.model_path = Path(model_path)
         self.index_path = Path(index_path) if index_path else None
         self.f0_method = f0_method
         self.f0_up_key = f0_up_key
         self.index_rate = index_rate
+        self.filter_radius = filter_radius
+        self.rms_mix_rate = rms_mix_rate
+        self.protect = protect
 
         # Determine device
         if device is None:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         else:
-            self.device = torch.device(device)
+            self.device = device
 
         logger.info(f"Initializing RVC processor on {self.device}")
 
-        # Load model
-        self._load_model()
+        # Check model exists
+        if not self.model_path.exists():
+            raise FileNotFoundError(f"RVC model not found: {self.model_path}")
 
-        # Load index if available
-        if self.index_path and self.index_path.exists() and FAISS_AVAILABLE:
-            self._load_index()
+        # Initialize RVC inference
+        self.rvc = None
+        if RVC_PYTHON_AVAILABLE:
+            self._init_rvc_python()
         else:
-            self.index = None
-            if self.index_path:
-                logger.warning(f"Index file not found or FAISS unavailable: {self.index_path}")
+            logger.warning("RVC will run in fallback mode (no voice conversion)")
 
-    def _load_model(self) -> None:
-        """Load RVC model from checkpoint."""
+        logger.success("RVC processor initialized")
+
+    def _init_rvc_python(self) -> None:
+        """Initialize rvc-python inference engine."""
         try:
-            if not self.model_path.exists():
-                raise FileNotFoundError(f"Model file not found: {self.model_path}")
+            logger.info("Initializing rvc-python inference...")
+            self.rvc = RVCPythonInference(device=self.device)
 
-            logger.info(f"Loading RVC model from {self.model_path}")
+            # Load model with index
+            logger.info(f"Loading RVC model: {self.model_path}")
+            model_version = "v2"  # May need to detect from model
+            index_path_str = str(self.index_path) if self.index_path and self.index_path.exists() else ""
 
-            # Load checkpoint
-            checkpoint = torch.load(self.model_path, map_location=self.device)
+            if index_path_str:
+                logger.info(f"Using feature index: {self.index_path}")
+            else:
+                logger.warning("No feature index provided")
 
-            # Store model configuration
-            self.config = checkpoint.get('config', {})
-            self.sample_rate = self.config.get('sample_rate', 48000)
-            self.hop_size = self.config.get('hop_size', 512)
-            self.f0 = self.config.get('if_f0', 1) == 1
+            self.rvc.load_model(
+                model_path_or_name=str(self.model_path),
+                version=model_version,
+                index_path=index_path_str
+            )
 
-            # Store weights
-            self.weights = checkpoint.get('weight', checkpoint)
+            # Set parameters
+            self.rvc.set_params(
+                f0up_key=self.f0_up_key,
+                f0method=self.f0_method,
+                index_rate=self.index_rate,
+                filter_radius=self.filter_radius,
+                rms_mix_rate=self.rms_mix_rate,
+                protect=self.protect,
+            )
 
-            logger.success(f"RVC model loaded successfully (sr={self.sample_rate})")
+            logger.success("rvc-python initialized successfully")
 
         except Exception as e:
-            logger.error(f"Failed to load RVC model: {e}")
-            raise
-
-    def _load_index(self) -> None:
-        """Load feature index for retrieval."""
-        if not FAISS_AVAILABLE:
-            logger.warning("FAISS not available, skipping index loading")
-            return
-
-        try:
-            logger.info(f"Loading feature index from {self.index_path}")
-            self.index = faiss.read_index(str(self.index_path))
-            logger.success("Feature index loaded successfully")
-
-        except Exception as e:
-            logger.error(f"Failed to load feature index: {e}")
-            self.index = None
+            logger.error(f"Failed to initialize rvc-python: {e}")
+            logger.exception(e)
+            self.rvc = None
 
     def process(
         self,
@@ -118,95 +151,115 @@ class RVCProcessor:
         """Process audio through RVC voice conversion.
 
         Args:
-            audio: Input audio samples
+            audio: Input audio samples (float32, -1.0 to 1.0)
             input_sample_rate: Sample rate of input audio
 
         Returns:
-            Converted audio samples
+            Converted audio samples (float32)
         """
         if len(audio) == 0:
             return audio
 
+        # If RVC not available, return original audio
+        if self.rvc is None:
+            logger.warning("RVC not available - returning original audio")
+            return audio
+
         try:
-            # Resample if needed
-            if input_sample_rate != self.sample_rate:
-                audio = self._resample(audio, input_sample_rate, self.sample_rate)
+            logger.debug(f"RVC processing: {len(audio)/input_sample_rate:.2f}s audio")
 
-            # Convert to torch tensor
-            audio_tensor = torch.from_numpy(audio).float().to(self.device)
+            # Use temporary files for RVC processing
+            with tempfile.TemporaryDirectory() as tmpdir:
+                input_path = Path(tmpdir) / "input.wav"
+                output_path = Path(tmpdir) / "output.wav"
 
-            # Perform voice conversion
-            with torch.no_grad():
-                converted_audio = self._convert_voice(audio_tensor)
+                # Write input audio
+                if not SOUNDFILE_AVAILABLE:
+                    logger.error("soundfile not available, cannot process audio")
+                    return audio
 
-            # Convert back to numpy
-            output = converted_audio.cpu().numpy()
+                sf.write(input_path, audio, input_sample_rate)
 
-            # Ensure float32
-            output = output.astype(np.float32)
+                # Process with RVC
+                logger.debug(f"Running RVC inference: {self.f0_method}, pitch={self.f0_up_key}")
+                self.rvc.infer_file(
+                    input_path=str(input_path),
+                    output_path=str(output_path),
+                )
 
-            logger.debug(f"RVC conversion complete: {len(output)/self.sample_rate:.2f}s")
+                # Read result
+                if output_path.exists():
+                    converted_audio, sr = sf.read(output_path, dtype='float32')
+                    logger.debug(f"RVC conversion complete: {len(converted_audio)/sr:.2f}s")
 
-            return output
+                    # Resample if needed
+                    if sr != input_sample_rate and LIBROSA_AVAILABLE:
+                        logger.debug(f"Resampling from {sr}Hz to {input_sample_rate}Hz")
+                        converted_audio = librosa.resample(
+                            converted_audio,
+                            orig_sr=sr,
+                            target_sr=input_sample_rate
+                        )
+
+                    return converted_audio.astype(np.float32)
+                else:
+                    logger.error("RVC output file not created")
+                    return audio
 
         except Exception as e:
             logger.error(f"RVC processing failed: {e}")
+            logger.exception(e)
             return audio  # Return original audio on error
 
-    def _convert_voice(self, audio_tensor: torch.Tensor) -> torch.Tensor:
-        """Core voice conversion logic.
-
-        This is a placeholder that would need actual RVC inference code.
-        For now, it returns the input (passthrough).
-
-        Args:
-            audio_tensor: Input audio as torch tensor
-
-        Returns:
-            Converted audio as torch tensor
-        """
-        # TODO: Implement actual RVC inference
-        # This would typically involve:
-        # 1. Extract F0 (pitch)
-        # 2. Extract features
-        # 3. Query index for similar features
-        # 4. Run through RVC model
-        # 5. Synthesize output
-
-        logger.warning("RVC conversion not fully implemented - using passthrough")
-        return audio_tensor
-
-    def _resample(
+    def update_params(
         self,
-        audio: NDArray[np.float32],
-        orig_sr: int,
-        target_sr: int
-    ) -> NDArray[np.float32]:
-        """Resample audio to target sample rate.
+        f0_up_key: int | None = None,
+        f0_method: str | None = None,
+        index_rate: float | None = None,
+        filter_radius: int | None = None,
+        rms_mix_rate: float | None = None,
+        protect: float | None = None,
+    ) -> None:
+        """Update RVC parameters.
 
         Args:
-            audio: Input audio
-            orig_sr: Original sample rate
-            target_sr: Target sample rate
-
-        Returns:
-            Resampled audio
+            f0_up_key: Pitch shift in semitones
+            f0_method: F0 extraction method
+            index_rate: Feature index influence
+            filter_radius: Median filter radius
+            rms_mix_rate: RMS envelope mixing rate
+            protect: Consonant protection
         """
-        import librosa
+        if f0_up_key is not None:
+            self.f0_up_key = f0_up_key
+        if f0_method is not None:
+            self.f0_method = f0_method
+        if index_rate is not None:
+            self.index_rate = index_rate
+        if filter_radius is not None:
+            self.filter_radius = filter_radius
+        if rms_mix_rate is not None:
+            self.rms_mix_rate = rms_mix_rate
+        if protect is not None:
+            self.protect = protect
 
-        if orig_sr == target_sr:
-            return audio
-
-        logger.debug(f"Resampling from {orig_sr}Hz to {target_sr}Hz")
-        resampled = librosa.resample(audio, orig_sr=orig_sr, target_sr=target_sr)
-        return resampled.astype(np.float32)
+        # Update RVC parameters if available
+        if self.rvc is not None and hasattr(self.rvc, 'set_params'):
+            self.rvc.set_params(
+                f0up_key=self.f0_up_key,
+                f0method=self.f0_method,
+                index_rate=self.index_rate,
+                filter_radius=self.filter_radius,
+                rms_mix_rate=self.rms_mix_rate,
+                protect=self.protect,
+            )
+            logger.debug("RVC parameters updated")
 
 
 class SimpleRVCProcessor:
-    """Simplified RVC processor using external inference tools.
+    """Simplified RVC processor with basic pitch shifting.
 
-    This version uses command-line RVC tools or simplified processing
-    when full RVC implementation is not available.
+    This is a fallback implementation when full RVC is not available.
     """
 
     def __init__(
@@ -219,40 +272,52 @@ class SimpleRVCProcessor:
         """Initialize simple RVC processor.
 
         Args:
-            model_path: Path to RVC model
-            index_path: Path to feature index
-            device: Device to run on
+            model_path: Path to RVC model (not used in simple mode)
+            index_path: Path to feature index (not used)
+            device: Device to run on (not used)
             pitch_shift: Pitch shift in semitones
         """
         self.model_path = Path(model_path)
-        self.index_path = Path(index_path) if index_path else None
         self.pitch_shift = pitch_shift
 
-        if device is None:
-            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        else:
-            self.device = device
-
-        logger.info(f"Simple RVC processor initialized with model: {self.model_path}")
+        logger.warning(
+            "SimpleRVCProcessor initialized - this only does basic pitch shifting, "
+            "not real voice conversion. Install rvc-python for full RVC support."
+        )
 
     def process(
         self,
         audio: NDArray[np.float32],
         input_sample_rate: int = 48000,
     ) -> NDArray[np.float32]:
-        """Process audio (simplified version).
+        """Process audio with basic pitch shifting.
 
         Args:
             audio: Input audio
             input_sample_rate: Input sample rate
 
         Returns:
-            Processed audio (currently passthrough)
+            Pitch-shifted audio
         """
-        logger.debug("Simple RVC processing (passthrough mode)")
-        # This is a placeholder - actual implementation would use
-        # external RVC tools or a simplified conversion algorithm
-        return audio
+        if len(audio) == 0 or self.pitch_shift == 0:
+            return audio
+
+        if not LIBROSA_AVAILABLE:
+            logger.warning("librosa not available, cannot apply pitch shift")
+            return audio
+
+        try:
+            import librosa
+            logger.debug(f"Applying pitch shift: {self.pitch_shift} semitones")
+            shifted = librosa.effects.pitch_shift(
+                audio,
+                sr=input_sample_rate,
+                n_steps=self.pitch_shift,
+            )
+            return shifted.astype(np.float32)
+        except Exception as e:
+            logger.error(f"Pitch shift failed: {e}")
+            return audio
 
 
 def create_rvc_processor(
@@ -272,7 +337,14 @@ def create_rvc_processor(
     Returns:
         RVC processor instance
     """
-    if simple_mode:
-        return SimpleRVCProcessor(model_path, index_path, **kwargs)
+    if simple_mode or not RVC_PYTHON_AVAILABLE:
+        if not simple_mode:
+            logger.warning("rvc-python not available, using simple mode")
+        return SimpleRVCProcessor(
+            model_path,
+            index_path,
+            pitch_shift=kwargs.get('f0_up_key', 0),
+            **{k: v for k, v in kwargs.items() if k in ['device']}
+        )
     else:
         return RVCProcessor(model_path, index_path, **kwargs)

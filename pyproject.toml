@@ -44,6 +44,11 @@ ru-full = [
     "gigaam==0.1.0",
     "librosa>=0.10.0",
     "faiss-cpu>=1.7.4",
+    "pyworld>=0.3.2",
+    "praat-parselmouth>=0.4.2",
+    "resampy>=0.4.2",
+    "torchcrepe>=0.0.20",
+    "rvc-python>=0.1.0",
 ]
 
 [project.scripts]
