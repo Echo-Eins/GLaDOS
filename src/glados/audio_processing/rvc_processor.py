@@ -138,9 +138,11 @@ class RVCProcessor:
                 logger.info(f"Attempting auto-detect index: {index_name}")
 
             # Initialize inferrvc RVC model
+            # Note: is_half=False to avoid fp16/fp32 dtype conflicts with PyTorch operations
             self.rvc = InferRVC(
                 model=str(self.model_path),
-                index=index_str
+                index=index_str,
+                is_half=False  # Use fp32 instead of fp16 to prevent dtype mismatches
             )
 
             logger.success(f"inferrvc initialized successfully: {self.rvc.name}")
@@ -173,8 +175,17 @@ class RVCProcessor:
             logger.warning("RVC not available - returning original audio")
             return audio
 
+        # Skip RVC for very short audio to avoid padding errors
+        # inferrvc uses t_pad=48000 samples (1 second at 48kHz, 3 seconds at 16kHz)
+        # Audio must be longer than 2*t_pad to accommodate reflection padding
+        min_duration = 1.5  # seconds
+        audio_duration = len(audio) / input_sample_rate
+        if audio_duration < min_duration:
+            logger.debug(f"Skipping RVC for short audio ({audio_duration:.2f}s < {min_duration}s)")
+            return audio
+
         try:
-            logger.debug(f"RVC processing: {len(audio)/input_sample_rate:.2f}s audio")
+            logger.debug(f"RVC processing: {audio_duration:.2f}s audio")
 
             # Convert to torch tensor
             audio_tensor = torch.from_numpy(audio).float()
