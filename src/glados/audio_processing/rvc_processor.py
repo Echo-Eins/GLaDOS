@@ -12,6 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pathlib import Path
 from loguru import logger
+from contextlib import contextmanager
 
 try:
     import soundfile as sf
@@ -188,14 +189,14 @@ class RVCProcessor:
                     return original_func(self, audio, *args, **kwargs)
 
                 # Calculate adaptive t_pad based on audio length
-                # For reflection padding we need: audio_length > 2*t_pad
+                # For reflection padding we need each pad < input length
                 audio_length = audio.shape[-1]
                 original_t_pad = self.t_pad
 
                 # Use smaller t_pad if audio is too short
-                # Max t_pad is (audio_length - 100) / 2 to ensure padding works
-                if audio_length < 2 * self.t_pad:
-                    self.t_pad = max(100, (audio_length - 100) // 2)
+                max_allowed_pad = max(0, audio_length - 1)
+                if self.t_pad > max_allowed_pad:
+                    self.t_pad = max_allowed_pad
                     logger.debug(
                         f"Reduced t_pad from {original_t_pad} to {self.t_pad} "
                         f"for short audio ({audio_length} samples)"
@@ -217,6 +218,95 @@ class RVCProcessor:
         except Exception as e:
             logger.error(f"Failed to apply adaptive pipeline patch: {e}")
             logger.exception(e)
+
+    def _collect_pad_targets(self):
+        """Collect objects that expose a ``t_pad`` attribute.
+
+        Returns the instantiated inferrvc pipeline (if available) together
+        with the underlying cached pipeline and the shared config object so we
+        can temporarily adjust their padding settings during inference.
+        """
+
+        if self.rvc is None:
+            return []
+
+        targets: list[object] = []
+        seen_ids: set[int] = set()
+
+        # Cached pipeline instance stored on the InferRVC object
+        cached_pipeline = getattr(self.rvc, "__dict__", {}).get("_pipeline")
+        if cached_pipeline is not None:
+            seen_ids.add(id(cached_pipeline))
+            targets.append(cached_pipeline)
+
+        # Ensure the public pipeline property is instantiated and captured
+        try:
+            pipeline_obj = getattr(self.rvc, "pipeline")
+        except Exception:
+            pipeline_obj = None
+        else:
+            if pipeline_obj is not None and id(pipeline_obj) not in seen_ids:
+                seen_ids.add(id(pipeline_obj))
+                targets.append(pipeline_obj)
+
+        # Include the shared config – new pipeline instances inherit from it
+        config_obj = getattr(self.rvc, "config", None)
+        if config_obj is not None and id(config_obj) not in seen_ids:
+            seen_ids.add(id(config_obj))
+            targets.append(config_obj)
+
+        return targets
+
+    @contextmanager
+    def _temporary_t_pad_limit(self, audio_length: int):
+        """Temporarily clamp inferrvc padding to fit the current audio."""
+
+        if audio_length <= 1:
+            # Nothing to pad – bail early
+            yield False
+            return
+
+        max_allowed_pad = audio_length - 1
+        pad_targets = self._collect_pad_targets()
+
+        adjustments: list[tuple[object, str, int]] = []
+        for target in pad_targets:
+            for attr in ("t_pad",):
+                if not hasattr(target, attr):
+                    continue
+
+                try:
+                    current_value = getattr(target, attr)
+                except Exception:
+                    continue
+
+                if isinstance(current_value, int) and current_value > max_allowed_pad:
+                    try:
+                        setattr(target, attr, max_allowed_pad)
+                    except Exception:
+                        continue
+                    adjustments.append((target, attr, current_value))
+
+        if adjustments:
+            logger.debug(
+                "Reduced RVC t_pad to %d for short audio (%d samples)",
+                max_allowed_pad,
+                audio_length,
+            )
+
+        try:
+            yield bool(adjustments)
+        finally:
+            for target, attr, original_value in adjustments:
+                try:
+                    setattr(target, attr, original_value)
+                except Exception as restore_error:
+                    logger.warning(
+                        "Failed to restore %s.%s after adaptive padding: %s",
+                        type(target).__name__,
+                        attr,
+                        restore_error,
+                    )
 
     def process(
         self,
@@ -350,16 +440,17 @@ class RVCProcessor:
 
                 logger.debug(f"Applied FP16->FP32 patches to {len(patched_classes)} torchaudio transforms")
 
-            output_tensor = self.rvc(
-                audio_tensor,
-                f0_up_key=self.f0_up_key,
-                f0_method=self.f0_method,
-                index_rate=self.index_rate,
-                filter_radius=self.filter_radius,
-                protect=self.protect,
-                output_device='cpu',  # Always return on CPU
-                output_volume=InferRVC.MATCH_ORIGINAL,  # Match input loudness
-            )
+            with self._temporary_t_pad_limit(audio_tensor.shape[-1]):
+                output_tensor = self.rvc(
+                    audio_tensor,
+                    f0_up_key=self.f0_up_key,
+                    f0_method=self.f0_method,
+                    index_rate=self.index_rate,
+                    filter_radius=self.filter_radius,
+                    protect=self.protect,
+                    output_device='cpu',  # Always return on CPU
+                    output_volume=InferRVC.MATCH_ORIGINAL,  # Match input loudness
+                )
 
             # Restore FP16 patches if we applied them
             # (adaptive_pipeline patch is permanent and not restored)

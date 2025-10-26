@@ -1,5 +1,6 @@
 Glados:
-  llm_model: "huihui_ai/qwen2.5-abliterate:14b"
+  #llm_model: "huihui_ai/qwen2.5-abliterate:14b"
+  llm_model: "glm-4.6:cloud"
   completion_url: "http://localhost:11434/api/chat"
   api_key: null  # Add your API key here if needed!
   interruptible: true
