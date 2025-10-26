@@ -21,6 +21,18 @@ Glados:
 
 
 # uv sync --extra cuda --extra ru for CUDA support
-#uv sync --extra cpu --extra ru for CPU-only support
-# ub run glados
-#uv clean
+# uv sync --extra cpu --extra ru for CPU-only support
+# uv run glados
+
+# uv clean
+# # 1. Проверка CUDA
+#uv run python scripts/check_cuda.py
+#
+## 2. Запуск русской GLaDOS (полная система)
+#uv run glados start --config configs/glados_ru_config.yaml
+#
+## 3. Запуск примеров
+#uv run python examples/glados_ru_example.py
+#
+## 4. Обычный запуск (английский голос)
+#uv run glados  # использует configs/glados_config.yaml
