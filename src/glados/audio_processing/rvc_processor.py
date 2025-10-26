@@ -205,25 +205,10 @@ class RVCProcessor:
                 audio_tensor = audio_tensor / max_val
                 logger.debug(f"Normalized audio (max={max_val:.3f})")
 
-            # inferrvc uses t_pad for reflection padding
-            # t_pad = tgt_sr (typically 48000 at model's target sample rate)
-            # At 16kHz input, t_pad is scaled: 48000 * (16000/48000) = 16000 samples = 1 second
-            # For reflection padding, we need audio length > 2*t_pad
-            t_pad_16k = int(self.rvc.tgt_sr * (16000 / self.rvc.tgt_sr))  # t_pad in 16kHz
-            min_samples = 2 * t_pad_16k + 1600  # Add extra 0.1s buffer
-
-            original_length = len(audio_tensor)
-            added_padding = 0
-
-            if original_length < min_samples:
-                # Add silence padding at the end to reach minimum length
-                added_padding = min_samples - original_length
-                silence = torch.zeros(added_padding, dtype=audio_tensor.dtype)
-                audio_tensor = torch.cat([audio_tensor, silence])
-                logger.debug(
-                    f"Added {added_padding/16000:.2f}s silence padding "
-                    f"(min required: {min_samples/16000:.2f}s, audio: {original_length/16000:.2f}s)"
-                )
+            # inferrvc uses t_pad for reflection padding which requires audio > 2*t_pad
+            # PROBLEM: t_pad = tgt_sr = 48000, so we need 96000 samples (6 seconds!)
+            # SOLUTION: Dynamically reduce t_pad for short audio instead of adding silence
+            # We'll monkey-patch Pipeline.pipeline() to use adaptive t_pad
 
             # Process with inferrvc
             logger.debug(
@@ -243,16 +228,46 @@ class RVCProcessor:
                 finally:
                     sys.argv = original_argv
 
-            # inferrvc has FP16 compatibility bugs with torchaudio operations:
-            # Many torchaudio ops use native C++ kernels that only support FP32/FP64
-            # This includes: Resample, Loudness, biquad filters, lfilter, pitch_shift, etc.
-            # Universal solution: Wrap ALL forward() methods in torchaudio.transforms
-            # to auto-convert FP16 <-> FP32 as needed
-            # Only needed when is_half=True (FP16 mode)
+            # Monkey-patches needed for inferrvc compatibility:
+            # 1. FP16 compatibility: torchaudio ops only support FP32/FP64
+            # 2. Adaptive t_pad: reduce padding for short audio to avoid errors
             patched_classes = []
             original_methods = {}
             original_resample = None
+            original_pipeline = None
 
+            # Always patch Pipeline for adaptive t_pad (not just FP16 mode)
+            import inferrvc.pipeline
+            original_pipeline = inferrvc.pipeline.Pipeline.pipeline
+
+            def adaptive_pipeline(self, audio, *args, **kwargs):
+                """Patched pipeline that uses adaptive t_pad for short audio."""
+                # Calculate adaptive t_pad based on audio length
+                # For reflection padding we need: audio_length > 2*t_pad
+                audio_length = audio.shape[-1]
+                original_t_pad = self.t_pad
+
+                # Use smaller t_pad if audio is too short
+                # Max t_pad is (audio_length - 100) / 2 to ensure padding works
+                if audio_length < 2 * self.t_pad:
+                    self.t_pad = max(100, (audio_length - 100) // 2)
+                    logger.debug(
+                        f"Reduced t_pad from {original_t_pad} to {self.t_pad} "
+                        f"for short audio ({audio_length} samples)"
+                    )
+
+                try:
+                    # Call original pipeline with adjusted t_pad
+                    result = original_pipeline(self, audio, *args, **kwargs)
+                finally:
+                    # Restore original t_pad
+                    self.t_pad = original_t_pad
+
+                return result
+
+            inferrvc.pipeline.Pipeline.pipeline = adaptive_pipeline
+
+            # FP16 compatibility patches (only when is_half=True)
             if self.is_half:
                 import inferrvc.modules
                 import torchaudio.transforms
@@ -325,6 +340,11 @@ class RVCProcessor:
             )
 
             # Restore all original functions if we patched them
+            # Restore Pipeline (always patched)
+            if original_pipeline:
+                inferrvc.pipeline.Pipeline.pipeline = original_pipeline
+
+            # Restore FP16 patches (only if is_half=True)
             if self.is_half and (original_resample or patched_classes):
                 # Restore ResampleCache
                 if original_resample:
@@ -342,19 +362,6 @@ class RVCProcessor:
             # Get output sample rate from inferrvc (default 44100)
             output_sr = getattr(self.rvc, 'outputfreq', 44100)
             logger.debug(f"RVC output: {len(converted_audio)/output_sr:.2f}s at {output_sr}Hz")
-
-            # Remove added padding (scale proportionally to output sample rate)
-            if added_padding > 0:
-                # Calculate how much padding was added in the output sample rate
-                # added_padding is in 16kHz, need to scale to output_sr
-                padding_samples_output = int(added_padding * (output_sr / 16000))
-                # Trim the silence we added at the end
-                original_length_output = len(converted_audio) - padding_samples_output
-                converted_audio = converted_audio[:original_length_output]
-                logger.debug(
-                    f"Removed {padding_samples_output/output_sr:.2f}s padding from output "
-                    f"({len(converted_audio)/output_sr:.2f}s remaining)"
-                )
 
             # Resample to match input sample rate if needed
             if output_sr != input_sample_rate and LIBROSA_AVAILABLE:
