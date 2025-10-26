@@ -12,9 +12,9 @@ The GLaDOS Russian TTS pipeline now includes full RVC voice conversion support:
 
 ## Installation
 
-### Install Dependencies
+### Basic Installation (without RVC)
 
-Install the full Russian TTS package with RVC support:
+Install the Russian TTS package without RVC (uses simple pitch shifting):
 
 ```bash
 # Using uv (recommended)
@@ -24,9 +24,37 @@ uv pip install -e ".[ru-full,cuda]"
 pip install -e ".[ru-full,cuda]"
 ```
 
-This installs:
+### Full RVC Installation (Python 3.11 required)
+
+**⚠️ Important:** Full RVC support requires **Python 3.11** due to faiss-cpu limitations.
+
+If you're using **Python 3.12**, you have two options:
+
+#### Option 1: Use without RVC (Recommended for Python 3.12)
+The system will automatically fall back to `SimpleRVCProcessor` which does basic pitch shifting.
+This is installed by default with `ru-full` - no additional steps needed!
+
+#### Option 2: Install RVC (Python 3.11 only)
+Create a Python 3.11 environment and install RVC dependencies:
+
+```bash
+# Create Python 3.11 environment
+conda create -n glados python=3.11
+conda activate glados
+
+# Install with RVC support
+uv pip install -e ".[ru-full,rvc,cuda]"
+
+# Or using pip
+pip install -e ".[ru-full,rvc,cuda]"
+```
+
+Additional RVC dependencies:
+- `faiss-cpu==1.7.3` - Feature index search (Python 3.11 only)
+- `rvc-python>=0.1.0` - RVC inference library
+
+Standard dependencies (installed with ru-full):
 - `librosa` - Audio processing
-- `faiss-cpu` - Feature index search
 - `pyworld` - F0 extraction
 - `praat-parselmouth` - Pitch analysis
 - `resampy` - Audio resampling
@@ -147,20 +175,49 @@ Total RTF (Real-Time Factor) is typically 1.5-2.5x on GPU.
 3. **Disable index**: Set `index_rate=0` if quality is acceptable
 4. **Batch processing**: Process multiple sentences together
 
-## Fallback Mode
+## Fallback Mode (Default for Python 3.12)
 
-If `rvc-python` is not installed, the system falls back to `SimpleRVCProcessor` which only does basic pitch shifting. Install the full dependencies for proper voice conversion.
+If `rvc-python` is not installed, the system **automatically** falls back to `SimpleRVCProcessor`:
+
+- ✅ **Basic pitch shifting** - Adjusts pitch without full voice conversion
+- ✅ **Fast processing** - Much faster than full RVC
+- ✅ **No additional dependencies** - Works with Python 3.12
+- ✅ **Good for testing** - Quick iteration on TTS
+
+**What you get without RVC:**
+- Silero TTS generates natural Russian speech
+- SimpleRVCProcessor applies pitch shifting (configurable via `f0_up_key`)
+- Audio processing (EQ, compression, reverb) is still applied
+- Result sounds good but won't have full GLaDOS voice conversion
+
+**What you get with RVC:**
+- Full voice conversion to GLaDOS timbre
+- Feature retrieval for better quality
+- Advanced pitch processing
+- More authentic GLaDOS sound
 
 ## Troubleshooting
 
 ### "rvc-python not available"
-Install with: `pip install rvc-python`
+This is expected if you're using Python 3.12. The system will use `SimpleRVCProcessor` instead.
+
+To use full RVC:
+- Option 1: Switch to Python 3.11 and install with `.[rvc]`
+- Option 2: Continue with SimpleRVCProcessor (still produces good results)
 
 ### "FAISS not available"
-Install with: `pip install faiss-cpu` (or `faiss-gpu` for GPU)
+Only needed for full RVC. If you see this warning but RVC is working, it means index search is disabled (not critical).
 
 ### "pyworld not available"
-Install with: `pip install pyworld`
+Install with: `pip install pyworld` - needed for F0 extraction
+
+### Python 3.12 + full RVC needed?
+You must use Python 3.11:
+```bash
+conda create -n glados python=3.11
+conda activate glados
+pip install -e ".[ru-full,rvc,cuda]"
+```
 
 ### RVC output sounds wrong
 - Check model version (v1 vs v2)
