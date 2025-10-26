@@ -243,33 +243,75 @@ class RVCProcessor:
                 finally:
                     sys.argv = original_argv
 
-            # inferrvc has a bug: internal resample uses FP16 tensors with FP32 kernel
-            # This causes dtype mismatch in torchaudio.Resample
-            # Workaround: Monkey-patch ResampleCache to convert to FP32 before resample
+            # inferrvc has FP16 compatibility bugs with torchaudio operations:
+            # Many torchaudio ops use native C++ kernels that only support FP32/FP64
+            # This includes: Resample, Loudness, biquad filters, lfilter, pitch_shift, etc.
+            # Universal solution: Wrap ALL forward() methods in torchaudio.transforms
+            # to auto-convert FP16 <-> FP32 as needed
             # Only needed when is_half=True (FP16 mode)
+            patched_classes = []
+            original_methods = {}
+            original_resample = None
+
             if self.is_half:
                 import inferrvc.modules
+                import torchaudio.transforms
+                import inspect
+
+                # Patch 1: ResampleCache for internal resampling (not a transform)
                 original_resample = inferrvc.modules.ResampleCache.resample
 
                 @staticmethod
                 def patched_resample(fromto, audio, deviceto):
                     """Patched resample that handles FP16/FP32 conversion."""
-                    # Convert to FP32 before resample
                     was_half = audio.dtype == torch.float16
                     if was_half:
                         audio = audio.float()
-
-                    # Call original resample (will use FP32 kernel)
                     result = original_resample(fromto, audio, deviceto)
-
-                    # Convert back to FP16 if needed
                     if was_half and deviceto.startswith('cuda'):
                         result = result.half()
-
                     return result
 
-                # Apply monkey patch
                 inferrvc.modules.ResampleCache.resample = patched_resample
+
+                # Patch 2: Universal wrapper for ALL torchaudio transforms
+                # Get all transform classes from torchaudio.transforms
+                for name in dir(torchaudio.transforms):
+                    obj = getattr(torchaudio.transforms, name)
+                    # Check if it's a class (not function/module) and has forward method
+                    if inspect.isclass(obj) and hasattr(obj, 'forward'):
+                        # Store original forward method
+                        original_forward = obj.forward
+                        original_methods[name] = original_forward
+
+                        def make_patched_forward(original_fn):
+                            """Create a patched forward that handles FP16 conversion."""
+                            def patched_forward(self, waveform, *args, **kwargs):
+                                # Convert to FP32 if needed
+                                was_half = isinstance(waveform, torch.Tensor) and waveform.dtype == torch.float16
+                                device = waveform.device if isinstance(waveform, torch.Tensor) else None
+
+                                if was_half:
+                                    waveform = waveform.float()
+
+                                # Call original forward with FP32
+                                result = original_fn(self, waveform, *args, **kwargs)
+
+                                # Convert back to FP16 if needed
+                                if was_half and device and device.type == 'cuda':
+                                    if isinstance(result, torch.Tensor):
+                                        result = result.half()
+                                    elif isinstance(result, tuple):
+                                        result = tuple(r.half() if isinstance(r, torch.Tensor) else r for r in result)
+
+                                return result
+                            return patched_forward
+
+                        # Apply patch
+                        obj.forward = make_patched_forward(original_forward)
+                        patched_classes.append((obj, name))
+
+                logger.debug(f"Applied FP16->FP32 patches to {len(patched_classes)} torchaudio transforms")
 
             output_tensor = self.rvc(
                 audio_tensor,
@@ -282,9 +324,17 @@ class RVCProcessor:
                 output_volume=InferRVC.MATCH_ORIGINAL,  # Match input loudness
             )
 
-            # Restore original resample if we patched it
-            if self.is_half:
-                inferrvc.modules.ResampleCache.resample = original_resample
+            # Restore all original functions if we patched them
+            if self.is_half and (original_resample or patched_classes):
+                # Restore ResampleCache
+                if original_resample:
+                    inferrvc.modules.ResampleCache.resample = original_resample
+
+                # Restore all torchaudio transforms
+                if patched_classes:
+                    for obj, name in patched_classes:
+                        obj.forward = original_methods[name]
+                    logger.debug(f"Restored {len(patched_classes)} torchaudio transforms to original")
 
             # Convert back to numpy
             converted_audio = output_tensor.cpu().numpy().astype(np.float32)
