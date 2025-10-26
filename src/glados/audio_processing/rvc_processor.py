@@ -138,19 +138,20 @@ class RVCProcessor:
                 logger.info(f"Attempting auto-detect index: {index_name}")
 
             # Initialize inferrvc RVC model
-            # Use FP16 on GPU for better performance (3x faster than FP32)
-            # We'll handle dtype conversions manually where needed
-            use_fp16 = self.device.startswith('cuda')
+            # inferrvc automatically uses FP16 on CUDA for better performance (3x faster)
+            # is_half is controlled via Config, not RVC.__init__ parameter
+            # Just pass the device and inferrvc will configure FP16 automatically
             self.rvc = InferRVC(
                 model=str(self.model_path),
-                index=index_str,
-                is_half=use_fp16
+                index=index_str
             )
-            self.is_half = use_fp16
+
+            # Check if FP16 is enabled (inferrvc auto-detects based on device)
+            self.is_half = getattr(self.rvc.config, 'is_half', False)
 
             logger.success(f"inferrvc initialized successfully: {self.rvc.name}")
             logger.info(f"Model sample rate: {self.rvc.tgt_sr}Hz, version: {self.rvc.version}")
-            logger.info(f"Using {'FP16' if self.is_half else 'FP32'} precision on {self.device}")
+            logger.info(f"Using {'FP16' if self.is_half else 'FP32'} precision on {self.rvc.config.device}")
 
         except Exception as e:
             logger.error(f"Failed to initialize inferrvc: {e}")
