@@ -63,6 +63,10 @@ glados = "glados.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Hatchling configuration
+[tool.hatch.metadata]
+allow-direct-references = true
+
 # Ruff configuration
 [tool.ruff]
 # Same as Black
