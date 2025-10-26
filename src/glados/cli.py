@@ -252,6 +252,7 @@ def tui(config_path: str | Path = "glados_config.yaml") -> None:
 
     This function initializes the GLaDOS TUI application, which provides decorative
     interface elements for voice interactions.
+    STABLE
     """
     # Protect ENTIRE function - fairseq may be imported during class instantiation!
     with _protect_argv():
