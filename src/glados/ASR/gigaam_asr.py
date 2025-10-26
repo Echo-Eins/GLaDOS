@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
 from numpy.typing import NDArray
 from loguru import logger
 import soundfile as sf
+
+from glados.utils.dataclass_patches import ensure_hydra_dataclass_compatibility
 
 def _wrap_ffmpeg_error(exc: FileNotFoundError) -> RuntimeError:
     """Create a user-friendly error when the ffmpeg binary is missing."""
@@ -37,6 +39,7 @@ class AudioTranscriber:
         fp16_encoder: bool = True,
     ) -> None:
         try:
+            ensure_hydra_dataclass_compatibility()
             import torch
             import gigaam
             from glados.utils.gigaam_patches import apply_gigaam_patches
