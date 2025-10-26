@@ -1,0 +1,42 @@
+{
+  "eq": [
+    {
+      "type": "highpass",
+      "frequency": 110,
+      "gain_db": 0,
+      "q_factor": 0.7
+    },
+    {
+      "type": "peak",
+      "frequency": 400,
+      "gain_db": -2.0,
+      "q_factor": 1.0
+    },
+    {
+      "type": "peak",
+      "frequency": 3200,
+      "gain_db": 5.0,
+      "q_factor": 1.2
+    },
+    {
+      "type": "highshelf",
+      "frequency": 7000,
+      "gain_db": 3.5,
+      "q_factor": 0.8
+    }
+  ],
+  "compressor": {
+    "threshold_db": -20,
+    "ratio": 4.0,
+    "attack_ms": 10,
+    "release_ms": 100,
+    "makeup_gain_db": 3
+  },
+  "reverb": {
+    "decay_s": 3.0,
+    "pre_delay_ms": 35,
+    "mix": 0.35,
+    "damping": 0.6,
+    "room_size": 0.7
+  }
+}
