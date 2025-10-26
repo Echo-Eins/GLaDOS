@@ -196,20 +196,20 @@ def say(text: str, config_path: str | Path = "glados_config.yaml") -> None:
     Example:
         say("Hello, world!")  # Speaks the text using GLaDOS voice
     """
-    # Deferred import with argv protection to avoid argparse conflicts
+    # Protect ENTIRE function - fairseq may be imported during class instantiation!
     with _protect_argv():
         from .TTS import tts_glados
         from .utils import spoken_text_converter as stc
 
-    glados_tts = tts_glados.SpeechSynthesizer()
-    converter = stc.SpokenTextConverter()
-    converted_text = converter.text_to_spoken(text)
-    # Generate the audio to from the text
-    audio = glados_tts.generate_speech_audio(converted_text)
+        glados_tts = tts_glados.SpeechSynthesizer()
+        converter = stc.SpokenTextConverter()
+        converted_text = converter.text_to_spoken(text)
+        # Generate the audio to from the text
+        audio = glados_tts.generate_speech_audio(converted_text)
 
-    # Play the audio
-    sd.play(audio, glados_tts.sample_rate)
-    sd.wait()
+        # Play the audio
+        sd.play(audio, glados_tts.sample_rate)
+        sd.wait()
 
 
 def start(config_path: str | Path = "glados_config.yaml", *, language: str | None = None) -> None:
@@ -231,19 +231,19 @@ def start(config_path: str | Path = "glados_config.yaml", *, language: str | Non
         start()  # Uses default configuration file
         start("/path/to/custom/config.yaml")  # Uses a custom configuration file
     """
-    # Deferred import with argv protection to avoid argparse conflicts
+    # Protect ENTIRE function - fairseq may be imported during class instantiation!
     with _protect_argv():
         from .core.engine import Glados, GladosConfig
 
-    glados_config = GladosConfig.from_yaml(str(config_path))
+        glados_config = GladosConfig.from_yaml(str(config_path))
 
-    if language:
-        glados_config = glados_config.model_copy(update={"language": language.lower()})
+        if language:
+            glados_config = glados_config.model_copy(update={"language": language.lower()})
 
-    glados = Glados.from_config(glados_config)
-    if glados.announcement:
-        glados.play_announcement()
-    glados.run()
+        glados = Glados.from_config(glados_config)
+        if glados.announcement:
+            glados.play_announcement()
+        glados.run()
 
 
 def tui(config_path: str | Path = "glados_config.yaml") -> None:
@@ -253,15 +253,15 @@ def tui(config_path: str | Path = "glados_config.yaml") -> None:
     This function initializes the GLaDOS TUI application, which provides decorative
     interface elements for voice interactions.
     """
-    # Deferred import with argv protection to avoid argparse conflicts
+    # Protect ENTIRE function - fairseq may be imported during class instantiation!
     with _protect_argv():
         import glados.tui as tui_module
 
-    try:
-        app = tui_module.GladosUI()
-        app.run()
-    except KeyboardInterrupt:
-        sys.exit()
+        try:
+            app = tui_module.GladosUI()
+            app.run()
+        except KeyboardInterrupt:
+            sys.exit()
 
 
 def main() -> int:
