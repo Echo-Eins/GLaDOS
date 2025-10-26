@@ -27,12 +27,17 @@ except ImportError:
     FAISS_AVAILABLE = False
     logger.warning("FAISS not available. RVC index search will be disabled.")
 
+# IMPORTANT: Lazy import of inferrvc to avoid argparse conflict!
+# inferrvc has argparse.parse_args() in Config.__init__ which runs on import
+# and conflicts with glados CLI arguments. We check availability without importing.
+INFERRVC_AVAILABLE = False
 try:
-    from inferrvc import RVC as InferRVC
-    INFERRVC_AVAILABLE = True
-    logger.info("inferrvc library detected")
+    import importlib.util
+    spec = importlib.util.find_spec("inferrvc")
+    if spec is not None:
+        INFERRVC_AVAILABLE = True
+        logger.info("inferrvc library detected (lazy import)")
 except ImportError:
-    INFERRVC_AVAILABLE = False
     logger.warning("inferrvc not available. RVC will use fallback mode.")
 
 try:
@@ -107,6 +112,11 @@ class RVCProcessor:
         try:
             logger.info("Initializing inferrvc inference...")
 
+            # Lazy import inferrvc HERE to avoid argparse conflict
+            # inferrvc has argparse in Config.__init__ that runs on import
+            from inferrvc import RVC as InferRVC
+            self.InferRVC = InferRVC  # Store class reference
+
             # Determine index path
             if self.index_path and self.index_path.exists():
                 index_str = str(self.index_path)
@@ -180,6 +190,12 @@ class RVCProcessor:
                 f"Running RVC inference: {self.f0_method}, "
                 f"pitch={self.f0_up_key}, index_rate={self.index_rate}"
             )
+
+            # Get InferRVC class reference (stored during init)
+            InferRVC = getattr(self, 'InferRVC', None)
+            if InferRVC is None:
+                # Fallback: import if not already imported (shouldn't happen)
+                from inferrvc import RVC as InferRVC
 
             output_tensor = self.rvc(
                 audio_tensor,
