@@ -27,7 +27,7 @@ Glados:
 #
 #   uv pip install -e ".[ru-full,rvc,cuda]"
 #
-## Проверка
+# Проверка
 #   uv run python -c "from inferrvc import RVC; print('✅ inferrvc OK')"
 
 # Запуск:
@@ -38,3 +38,9 @@ Glados:
 #
 # Проверка CUDA:
 #   python scripts/check_cuda.py
+#
+# 1. Переустановить пакет
+#   uv pip install -e . --force-reinstall --no-deps
+#
+# 2. Запустить GLaDOS
+#   uv run glados start --config configs/glados_ru_config.yaml
