@@ -7,6 +7,7 @@ configuration management, and component coordination.
 
 from pathlib import Path
 import queue
+import os
 import sys
 import threading
 import time
@@ -355,6 +356,12 @@ class Glados:
 
         logger.success("Audio Modules Operational")
         logger.success("Listening...")
+
+        if os.getenv("GLADOS_AUTOSHUTDOWN") == "1":
+            logger.info("GLADOS_AUTOSHUTDOWN detected, exiting listen loop immediately.")
+            self.shutdown_event.set()
+            self.audio_io.stop_listening()
+            return
 
         # Loop forever, but is 'paused' when new samples are not available
         try:

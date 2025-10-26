@@ -1,17 +1,6 @@
-"""Audio input/output components.
+"""Audio backend abstractions for Glados."""
 
-This package provides an abstraction layer for audio input and output operations,
-allowing the Glados engine to work with different audio backends interchangeably.
-
-Classes:
-    AudioIO: Abstract interface for audio input/output operations
-    SoundDeviceAudioIO: Implementation using the sounddevice library
-    WebSocketAudioIO: Implementation using WebSockets for network streaming
-
-Functions:
-    create_audio_io: Factory function to create AudioIO instances
-"""
-
+import os
 import queue
 from typing import Protocol
 
@@ -36,22 +25,16 @@ class AudioProtocol(Protocol):
 
 # Factory function
 def get_audio_system(backend_type: str = "sounddevice", vad_threshold: float | None = None) -> AudioProtocol:
-    """
-    Factory function to get an instance of an audio I/O system based on the specified backend type.
+    """Return an audio backend implementation."""
 
-    Parameters:
-        backend_type (str): The type of audio backend to use:
-            - "sounddevice": Uses the sounddevice library for local audio I/O
-            - "websocket": Network-based audio I/O (not yet implemented)
-        vad_threshold (float | None): Optional threshold for voice activity detection
+    fallback_backend = os.getenv("GLADOS_AUDIO_FALLBACK")
 
-    Returns:
-        AudioProtocol: An instance of the requested audio I/O system
-
-    Raises:
-        ValueError: If the specified backend type is not supported
-    """
     if backend_type == "sounddevice":
+        if fallback_backend == "null":
+            from .null_io import NullAudioIO
+
+            return NullAudioIO(vad_threshold=vad_threshold)
+
         from .sounddevice_io import SoundDeviceAudioIO
 
         return SoundDeviceAudioIO(
@@ -59,6 +42,10 @@ def get_audio_system(backend_type: str = "sounddevice", vad_threshold: float | N
         )
     elif backend_type == "websocket":
         raise ValueError("WebSocket audio backend is not yet implemented.")
+    elif backend_type == "null":
+        from .null_io import NullAudioIO
+
+        return NullAudioIO(vad_threshold=vad_threshold)
     else:
         raise ValueError(f"Unsupported audio backend type: {backend_type}")
 
@@ -68,3 +55,4 @@ __all__ = [
     "AudioProtocol",
     "get_audio_system",
 ]
+
