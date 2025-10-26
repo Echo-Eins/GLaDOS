@@ -61,8 +61,6 @@ class GLaDOSRuSynthesizer:
         self.tts = SileroRuSynthesizer(
             speaker="xenia",
             sample_rate=48000,
-            put_accent=True,
-            put_yo=True,
             device=device,
         )
         self.sample_rate = self.tts.sample_rate
