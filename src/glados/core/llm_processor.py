@@ -1,5 +1,6 @@
 # --- llm_processor.py ---
 import json
+import math
 import queue
 import re
 import threading
@@ -11,6 +12,41 @@ from .audio_data import RecognitionResult
 from loguru import logger
 from pydantic import HttpUrl  # If HttpUrl is used by config
 import requests
+
+
+def sanitize_emotions_for_json(emotions: dict[str, float] | None) -> dict[str, float] | None:
+    """Sanitize emotion values to ensure JSON compatibility.
+
+    Replaces NaN and infinity values with 0.0 to prevent JSON serialization errors.
+
+    Args:
+        emotions: Dictionary mapping emotion names to probability values
+
+    Returns:
+        Sanitized emotions dictionary or None if input is None
+    """
+    if emotions is None:
+        return None
+
+    sanitized = {}
+    has_invalid = False
+    for key, value in emotions.items():
+        if not isinstance(value, (int, float)):
+            sanitized[key] = 0.0
+            has_invalid = True
+        elif math.isnan(value) or math.isinf(value):
+            sanitized[key] = 0.0
+            has_invalid = True
+        else:
+            sanitized[key] = float(value)
+
+    if has_invalid:
+        logger.warning(
+            f"LLM Processor: Sanitized invalid emotion values before JSON serialization. "
+            f"Original: {emotions}, Sanitized: {sanitized}"
+        )
+
+    return sanitized
 
 
 class LanguageModelProcessor:
@@ -163,7 +199,10 @@ class LanguageModelProcessor:
                 }
 
                 if emotions:
-                    data["metadata"] = {"emotions": dict(emotions)}
+                    # Sanitize emotions to prevent JSON serialization errors with NaN/inf values
+                    sanitized_emotions = sanitize_emotions_for_json(emotions)
+                    if sanitized_emotions:
+                        data["metadata"] = {"emotions": sanitized_emotions}
 
                 sentence_buffer: list[str] = []
                 try:
