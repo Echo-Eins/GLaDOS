@@ -135,16 +135,8 @@ url = "https://download.pytorch.org/whl/cu121"
 explicit = true
 
 [tool.uv.sources]
-# CUDA versions (for cuda extra)
-torch = [
-    { index = "pytorch-cu121", marker = "extra == 'cuda'" },
-    { version = "==2.4.0", marker = "extra != 'cuda'" },
-]
-torchaudio = [
-    { index = "pytorch-cu121", marker = "extra == 'cuda'" },
-    { version = "==2.4.0", marker = "extra != 'cuda'" },
-]
-torchvision = [
-    { index = "pytorch-cu121", marker = "extra == 'cuda'" },
-    { version = "==0.19.0", marker = "extra != 'cuda'" },
-]
+# PyTorch CUDA versions will be installed from pytorch-cu121 index when using --extra cuda
+# The install script (scripts/install_cuda.ps1) handles this explicitly
+torch = { index = "pytorch-cu121", marker = "extra == 'cuda'" }
+torchaudio = { index = "pytorch-cu121", marker = "extra == 'cuda'" }
+torchvision = { index = "pytorch-cu121", marker = "extra == 'cuda'" }
