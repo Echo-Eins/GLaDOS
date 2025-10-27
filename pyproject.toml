@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 cuda = [
     "onnxruntime-gpu>=1.16.0",
+    # PyTorch with CUDA 12.1 support - installed via pytorch-cu121 index
     "torch==2.4.0",
     "torchaudio==2.4.0",
     "torchvision==0.19.0",
@@ -131,10 +132,19 @@ strict = true
 [[tool.uv.index]]
 name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"
-# Note: Removed 'explicit = true' to allow uv to use this index automatically
-# when torch/torchaudio/torchvision are specified in [tool.uv.sources]
+explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu121" }
-torchaudio = { index = "pytorch-cu121" }
-torchvision = { index = "pytorch-cu121" }
+# CUDA versions (for cuda extra)
+torch = [
+    { index = "pytorch-cu121", marker = "extra == 'cuda'" },
+    { version = "==2.4.0", marker = "extra != 'cuda'" },
+]
+torchaudio = [
+    { index = "pytorch-cu121", marker = "extra == 'cuda'" },
+    { version = "==2.4.0", marker = "extra != 'cuda'" },
+]
+torchvision = [
+    { index = "pytorch-cu121", marker = "extra == 'cuda'" },
+    { version = "==0.19.0", marker = "extra != 'cuda'" },
+]
