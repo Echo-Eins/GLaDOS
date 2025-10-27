@@ -339,8 +339,19 @@ class RVCProcessor:
             audio_duration = len(audio) / input_sample_rate
             logger.debug(f"RVC processing: {audio_duration:.2f}s audio")
 
+            # Check minimum audio length for RVC processing
+            # RVC requires at least ~0.1 seconds of audio to process reliably
+            MIN_AUDIO_DURATION = 0.1  # seconds
+            if audio_duration < MIN_AUDIO_DURATION:
+                logger.warning(
+                    f"Audio too short for RVC processing ({audio_duration:.3f}s < {MIN_AUDIO_DURATION}s). "
+                    f"Returning original audio."
+                )
+                return audio
+
             # Convert to torch tensor (fp32 initially for resampling compatibility)
             audio_tensor = torch.from_numpy(audio).float()
+            logger.debug(f"Audio tensor shape after numpy conversion: {audio_tensor.shape}, numel: {audio_tensor.numel()}")
 
             # Resample to 16kHz (required by RVC)
             # Keep in fp32 for resampling to avoid dtype issues with torchaudio
@@ -354,6 +365,11 @@ class RVCProcessor:
                 audio_tensor = resampler(audio_tensor)
                 logger.debug(f"Resampled from {input_sample_rate}Hz to 16kHz")
 
+                # Validate resampled audio is not empty
+                if audio_tensor.numel() == 0:
+                    logger.error(f"Resampling produced empty tensor! Original audio had {len(audio)} samples")
+                    return audio
+
             # Normalize if needed
             max_val = audio_tensor.abs().max()
             if max_val > 1.0:
@@ -366,6 +382,7 @@ class RVCProcessor:
                 f"Running RVC inference: {self.f0_method}, "
                 f"pitch={self.f0_up_key}, index_rate={self.index_rate}"
             )
+            logger.debug(f"Input tensor to RVC: shape={audio_tensor.shape}, numel={audio_tensor.numel()}, dtype={audio_tensor.dtype}")
 
             # Get InferRVC class reference (stored during init)
             InferRVC = getattr(self, 'InferRVC', None)
@@ -456,6 +473,16 @@ class RVCProcessor:
                     output_device='cpu',  # Always return on CPU
                     output_volume=InferRVC.MATCH_ORIGINAL,  # Match input loudness
                 )
+
+            # Validate RVC output is not empty
+            logger.debug(f"RVC output tensor: shape={output_tensor.shape}, numel={output_tensor.numel()}, dtype={output_tensor.dtype}")
+            if output_tensor.numel() == 0:
+                logger.error(
+                    f"RVC produced empty output! Input had {audio_tensor.numel()} samples. "
+                    f"This may indicate the input audio is too short or incompatible with the RVC model. "
+                    f"Returning original audio."
+                )
+                return audio
 
             # Restore FP16 patches if we applied them
             # (adaptive_pipeline patch is permanent and not restored)
