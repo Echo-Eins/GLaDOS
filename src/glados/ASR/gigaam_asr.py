@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import tempfile
 from typing import Any, Mapping
@@ -96,5 +97,27 @@ class AudioTranscriber:
             emotion_probs = self._emotion_model.get_probs(str(audio_path))
         except FileNotFoundError as exc:  # pragma: no cover - depends on environment
             raise _wrap_ffmpeg_error(exc) from exc
-        formatted = {label: round(float(value), 4) for label, value in emotion_probs.items()}
+        except Exception as e:
+            # If emotion model fails, return transcription with no emotions
+            logger.error(f"Emotion model failed: {e}")
+            transcription = str(self._asr_model.transcribe(str(audio_path)))
+            return transcription, {}
+
+        # Sanitize emotion values to handle NaN/inf cases
+        formatted = {}
+        has_nan = False
+        for label, value in emotion_probs.items():
+            float_val = float(value)
+            if math.isnan(float_val) or math.isinf(float_val):
+                formatted[label] = 0.0
+                has_nan = True
+            else:
+                formatted[label] = round(float_val, 4)
+
+        if has_nan:
+            logger.warning(
+                f"GigaAM emotion model returned NaN/inf values. "
+                f"Original: {emotion_probs}, Sanitized: {formatted}"
+            )
+
         return transcription, formatted

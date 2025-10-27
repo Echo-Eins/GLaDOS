@@ -6,6 +6,7 @@ voice activity detection, speech recognition, and wake word detection.
 """
 
 from collections import deque
+import math
 import queue
 import threading
 
@@ -17,6 +18,37 @@ from numpy.typing import NDArray
 from ..ASR import TranscriberProtocol
 from ..audio_io import AudioProtocol
 from .audio_data import RecognitionResult
+
+
+def sanitize_emotions(emotions: dict[str, float] | None) -> dict[str, float] | None:
+    """Sanitize emotion dictionary by replacing NaN/inf values with 0.0.
+
+    Args:
+        emotions: Dictionary mapping emotion names to probability values
+
+    Returns:
+        Sanitized emotions dictionary or None if input is None
+    """
+    if emotions is None:
+        return None
+
+    sanitized = {}
+    has_invalid = False
+    for key, value in emotions.items():
+        if not isinstance(value, (int, float)):
+            sanitized[key] = 0.0
+            has_invalid = True
+        elif math.isnan(value) or math.isinf(value):
+            sanitized[key] = 0.0
+            has_invalid = True
+        else:
+            sanitized[key] = float(value)
+
+    if has_invalid:
+        logger.warning(f"Sanitized invalid emotion values (NaN/inf): {emotions} -> {sanitized}")
+
+    return sanitized
+
 
 class SpeechListener:
     """
@@ -288,6 +320,8 @@ class SpeechListener:
         if hasattr(self.asr_model, "transcribe_with_emotions"):
             text, emotions = getattr(self.asr_model, "transcribe_with_emotions")(audio)
             detected_text = text
+            # Sanitize emotions to remove NaN/inf values that would break JSON serialization
+            emotions = sanitize_emotions(emotions)
         else:
             detected_text = self.asr_model.transcribe(audio)
 
