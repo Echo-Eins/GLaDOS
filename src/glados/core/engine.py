@@ -278,7 +278,12 @@ class Glados:
             interruptible = self.interruptible
         logger.success("Playing announcement...")
         if self.announcement:
-            self.tts_queue.put(self.announcement)
+            announcement_msg = TTSTextMessage(
+                text=self.announcement,
+                sequence_num=-1,
+                is_eos=False,
+            )
+            self.tts_queue.put(announcement_msg)
             self.processing_active_event.set()
 
     @property
