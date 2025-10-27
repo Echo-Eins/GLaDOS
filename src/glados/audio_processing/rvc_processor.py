@@ -160,6 +160,14 @@ class RVCProcessor:
             logger.info(f"Model sample rate: {self.rvc.tgt_sr}Hz, version: {self.rvc.version}")
             logger.info(f"Using {'FP16' if self.is_half else 'FP32'} precision on {self.rvc.config.device}")
 
+            # Warn if FP16 is not enabled on CUDA (performance issue)
+            if torch.cuda.is_available() and not self.is_half:
+                logger.warning(
+                    "RVC is running on CUDA but FP16 is NOT enabled! "
+                    "This will be significantly slower. "
+                    "inferrvc should auto-enable FP16 on CUDA - check your installation."
+                )
+
             # Apply adaptive t_pad patch ONCE during initialization
             self._apply_adaptive_pipeline_patch()
 

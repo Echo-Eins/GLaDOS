@@ -63,7 +63,7 @@ class SpeechPlayer:
                     self.currently_speaking_event.set()  # We are about to speak
 
                     self.audio_io.start_speaking(audio_msg.audio, self.tts_sample_rate)
-                    logger.success(f"TTS text: {audio_msg.text}")
+                    logger.success(f"AudioPlayer: Playing #{audio_msg.sequence_num}: {audio_msg.text}")
 
                     # Wait for the audio to finish playing or be interrupted
                     interrupted, percentage_played = self.audio_io.measure_percentage_spoken(

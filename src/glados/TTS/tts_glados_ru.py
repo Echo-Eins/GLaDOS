@@ -56,12 +56,13 @@ class GLaDOSRuSynthesizer:
         self.model_path = Path(model_path)
         self.index_path = Path(index_path)
 
-        # Initialize Silero TTS
+        # Initialize Silero TTS with FP16 enabled on CUDA
         logger.info("Initializing Silero Russian TTS...")
         self.tts = SileroRuSynthesizer(
             speaker="xenia",
             sample_rate=48000,
             device=device,
+            use_fp16=True,  # Enable FP16 for faster inference on CUDA
         )
         self.sample_rate = self.tts.sample_rate
 
