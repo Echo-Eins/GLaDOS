@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Any, ClassVar
 
-from .audio_data import RecognitionResult
+from .audio_data import RecognitionResult, TTSTextMessage
 
 from loguru import logger
 from pydantic import HttpUrl  # If HttpUrl is used by config
@@ -58,11 +58,12 @@ class LanguageModelProcessor:
     """
 
     PUNCTUATION_SET: ClassVar[set[str]] = {".", "!", "?", ":", ";", "?!", "\n", "\n\n"}
+    PARAGRAPH_BATCH_SIZE: ClassVar[int] = 3  # Process 3 paragraphs in parallel
 
     def __init__(
         self,
         llm_input_queue: queue.Queue[RecognitionResult],
-        tts_input_queue: queue.Queue[str],
+        tts_input_queue: queue.Queue[TTSTextMessage],
         conversation_history: list[dict[str, str]],  # Shared
         completion_url: HttpUrl,
         model_name: str,  # Renamed from 'model' to avoid conflict
@@ -84,6 +85,9 @@ class LanguageModelProcessor:
         self.prompt_headers = {"Content-Type": "application/json"}
         if api_key:
             self.prompt_headers["Authorization"] = f"Bearer {api_key}"
+
+        # Sequence counter for paragraph ordering
+        self.sequence_counter = 0
 
     def _clean_raw_bytes(self, line: bytes) -> dict[str, str] | None:
         """
@@ -143,20 +147,33 @@ class LanguageModelProcessor:
             logger.error(f"LLM Processor: Error processing chunk: {e}, chunk: {line}")
             return None
 
-    def _process_sentence_for_tts(self, current_sentence_parts: list[str]) -> None:
+    def _send_paragraph_batch(self, paragraphs: list[str]) -> None:
         """
-        Process the current sentence parts and send the complete sentence to the TTS queue.
-        Cleans up the sentence by removing unwanted characters and formatting it for TTS.
-        Args:
-            current_sentence_parts (list[str]): List of sentence parts to be processed.
-        """
-        sentence = "".join(current_sentence_parts)
-        sentence = re.sub(r"\*.*?\*|\(.*?\)", "", sentence)
-        sentence = sentence.replace("\n\n", ". ").replace("\n", ". ").replace("  ", " ").replace(":", " ")
+        Send a batch of paragraphs to TTS queue with sequence numbers.
+        Batch will be processed in parallel by TTS synthesizer.
 
-        if sentence and sentence != ".":  # Avoid sending just a period
-            logger.info(f"LLM Processor: Sending to TTS queue: '{sentence}'")
-            self.tts_input_queue.put(sentence)
+        Args:
+            paragraphs: List of paragraph strings to send (up to PARAGRAPH_BATCH_SIZE)
+        """
+        if not paragraphs:
+            return
+
+        logger.info(f"LLM Processor: Sending batch of {len(paragraphs)} paragraphs to TTS")
+
+        for paragraph in paragraphs:
+            # Clean paragraph
+            cleaned = re.sub(r"\*.*?\*|\(.*?\)", "", paragraph)
+            cleaned = cleaned.replace("  ", " ").strip()
+
+            if cleaned and len(cleaned) > 1:  # Avoid empty or single-char strings
+                msg = TTSTextMessage(
+                    text=cleaned,
+                    sequence_num=self.sequence_counter,
+                    is_eos=False
+                )
+                self.sequence_counter += 1
+                logger.debug(f"LLM Processor: Queuing paragraph #{msg.sequence_num}: '{cleaned[:50]}...'")
+                self.tts_input_queue.put(msg)
 
     def run(self) -> None:
         """
@@ -204,7 +221,10 @@ class LanguageModelProcessor:
                     if sanitized_emotions:
                         data["metadata"] = {"emotions": sanitized_emotions}
 
-                sentence_buffer: list[str] = []
+                # Paragraph-based parsing for parallel TTS processing
+                paragraph_buffer: list[str] = []  # Current paragraph being built
+                paragraph_batch: list[str] = []  # Batch of complete paragraphs (max 3)
+
                 try:
                     with requests.post(
                         str(self.completion_url),
@@ -215,6 +235,7 @@ class LanguageModelProcessor:
                     ) as response:
                         response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
                         logger.debug("LLM Processor: Request to LLM successful, processing stream...")
+
                         for line in response.iter_lines():
                             if not self.processing_active_event.is_set() or self.shutdown_event.is_set():
                                 logger.info("LLM Processor: Interruption or shutdown detected during LLM stream.")
@@ -225,13 +246,33 @@ class LanguageModelProcessor:
                                 if cleaned_line_data:
                                     chunk = self._process_chunk(cleaned_line_data)
                                     if chunk:  # Chunk can be an empty string, but None means no actual content
-                                        sentence_buffer.append(chunk)
-                                        # Split on defined punctuation or if chunk itself is punctuation
-                                        if chunk.strip() in self.PUNCTUATION_SET and (
-                                            len(sentence_buffer) < 2 or not sentence_buffer[-2].strip().isdigit()
-                                        ):
-                                            self._process_sentence_for_tts(sentence_buffer)
-                                            sentence_buffer = []
+                                        paragraph_buffer.append(chunk)
+
+                                        # Check for paragraph break (double newline)
+                                        if "\n\n" in chunk:
+                                            # Complete paragraph detected
+                                            paragraph_text = "".join(paragraph_buffer)
+                                            paragraph_buffer = []
+
+                                            # Add to batch
+                                            paragraph_batch.append(paragraph_text)
+
+                                            # Send batch when we have 3 paragraphs
+                                            if len(paragraph_batch) >= self.PARAGRAPH_BATCH_SIZE:
+                                                self._send_paragraph_batch(paragraph_batch)
+                                                paragraph_batch = []
+
+                                        # Also split on sentence endings if no paragraph break for a while
+                                        elif chunk.strip() in {".", "!", "?", "?!"} and len("".join(paragraph_buffer)) > 200:
+                                            # Long paragraph without break - split it
+                                            paragraph_text = "".join(paragraph_buffer)
+                                            paragraph_buffer = []
+                                            paragraph_batch.append(paragraph_text)
+
+                                            if len(paragraph_batch) >= self.PARAGRAPH_BATCH_SIZE:
+                                                self._send_paragraph_batch(paragraph_batch)
+                                                paragraph_batch = []
+
                                     # OpenAI [DONE]
                                     elif cleaned_line_data.get("done_marker"):  # OpenAI [DONE]
                                         break
@@ -239,18 +280,35 @@ class LanguageModelProcessor:
                                     elif cleaned_line_data.get("done") and cleaned_line_data.get("response") == "":
                                         break
 
-                        # After loop, process any remaining buffer content if not interrupted
-                        if self.processing_active_event.is_set() and sentence_buffer:
-                            self._process_sentence_for_tts(sentence_buffer)
+                        # After loop, process any remaining content if not interrupted
+                        if self.processing_active_event.is_set():
+                            # Add remaining paragraph buffer to batch
+                            if paragraph_buffer:
+                                paragraph_text = "".join(paragraph_buffer)
+                                paragraph_batch.append(paragraph_text)
+
+                            # Send any remaining paragraphs
+                            if paragraph_batch:
+                                self._send_paragraph_batch(paragraph_batch)
 
                 except requests.exceptions.ConnectionError as e:
                     logger.error(f"LLM Processor: Connection error to LLM service: {e}")
-                    self.tts_input_queue.put(
-                        "I'm unable to connect to my thinking module. Please check the LLM service connection."
+                    error_msg = TTSTextMessage(
+                        text="I'm unable to connect to my thinking module. Please check the LLM service connection.",
+                        sequence_num=self.sequence_counter,
+                        is_eos=False
                     )
+                    self.sequence_counter += 1
+                    self.tts_input_queue.put(error_msg)
                 except requests.exceptions.Timeout as e:
                     logger.error(f"LLM Processor: Request to LLM timed out: {e}")
-                    self.tts_input_queue.put("My brain seems to be taking too long to respond. It might be overloaded.")
+                    error_msg = TTSTextMessage(
+                        text="My brain seems to be taking too long to respond. It might be overloaded.",
+                        sequence_num=self.sequence_counter,
+                        is_eos=False
+                    )
+                    self.sequence_counter += 1
+                    self.tts_input_queue.put(error_msg)
                 except requests.exceptions.HTTPError as e:
                     status_code = (
                         e.response.status_code
@@ -258,18 +316,37 @@ class LanguageModelProcessor:
                         else "unknown"
                     )
                     logger.error(f"LLM Processor: HTTP error {status_code} from LLM service: {e}")
-                    self.tts_input_queue.put(f"I received an error from my thinking module. HTTP status {status_code}.")
+                    error_msg = TTSTextMessage(
+                        text=f"I received an error from my thinking module. HTTP status {status_code}.",
+                        sequence_num=self.sequence_counter,
+                        is_eos=False
+                    )
+                    self.sequence_counter += 1
+                    self.tts_input_queue.put(error_msg)
                 except requests.exceptions.RequestException as e:
                     logger.error(f"LLM Processor: Request to LLM failed: {e}")
-                    self.tts_input_queue.put("Sorry, I encountered an error trying to reach my brain.")
+                    error_msg = TTSTextMessage(
+                        text="Sorry, I encountered an error trying to reach my brain.",
+                        sequence_num=self.sequence_counter,
+                        is_eos=False
+                    )
+                    self.sequence_counter += 1
+                    self.tts_input_queue.put(error_msg)
                 except Exception as e:
                     logger.exception(f"LLM Processor: Unexpected error during LLM request/streaming: {e}")
-                    self.tts_input_queue.put("I'm having a little trouble thinking right now.")
+                    error_msg = TTSTextMessage(
+                        text="I'm having a little trouble thinking right now.",
+                        sequence_num=self.sequence_counter,
+                        is_eos=False
+                    )
+                    self.sequence_counter += 1
+                    self.tts_input_queue.put(error_msg)
                 finally:
                     # Always send EOS if we started processing, unless interrupted early
                     if self.processing_active_event.is_set():  # Only send EOS if not interrupted
                         logger.debug("LLM Processor: Sending EOS token to TTS queue.")
-                        self.tts_input_queue.put("<EOS>")
+                        eos_msg = TTSTextMessage(text="", sequence_num=0, is_eos=True)
+                        self.tts_input_queue.put(eos_msg)
                     else:
                         logger.info("LLM Processor: Interrupted, not sending EOS from LLM processing.")
                         # The AudioPlayer will handle clearing its state.

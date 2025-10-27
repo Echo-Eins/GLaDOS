@@ -20,7 +20,7 @@ from ..audio_io import AudioProtocol, get_audio_system
 from ..TTS import SpeechSynthesizerProtocol, get_speech_synthesizer
 from ..utils import spoken_text_converter as stc
 from ..utils.resources import resource_path
-from .audio_data import AudioMessage, RecognitionResult
+from .audio_data import AudioMessage, RecognitionResult, TTSTextMessage
 from .llm_processor import LanguageModelProcessor
 from .speech_listener import SpeechListener
 from .speech_player import SpeechPlayer
@@ -194,7 +194,7 @@ class Glados:
 
         # Initialize queues for inter-thread communication
         self.llm_queue: queue.Queue[RecognitionResult] = queue.Queue()
-        self.tts_queue: queue.Queue[str] = queue.Queue()  # Text from LLMProcessor to TTSynthesizer
+        self.tts_queue: queue.Queue[TTSTextMessage] = queue.Queue()  # TTSTextMessage from LLMProcessor to TTSynthesizer
         self.audio_queue: queue.Queue[AudioMessage] = queue.Queue()  # AudioMessages from TTSSynthesizer to AudioPlayer
 
         # Initialize audio input/output system

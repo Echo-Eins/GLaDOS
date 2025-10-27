@@ -23,6 +23,7 @@ class SileroRuSynthesizer:
         speaker: str = "xenia",
         sample_rate: int = 48000,
         device: str | None = None,
+        use_fp16: bool = True,
     ):
         """Initialize Silero Russian TTS synthesizer.
 
@@ -31,6 +32,7 @@ class SileroRuSynthesizer:
                 Available: 'aidar', 'baya', 'kseniya', 'xenia', 'eugene', 'random'
             sample_rate: Audio sample rate (8000, 24000, or 48000)
             device: Device to run model on ('cpu', 'cuda', or None for auto)
+            use_fp16: Use FP16 precision on CUDA for faster inference (default: True)
 
         Note:
             V4 model has automatic stress placement (put_accent) built-in.
@@ -44,7 +46,12 @@ class SileroRuSynthesizer:
         else:
             self.device = torch.device(device)
 
+        # FP16 only works on CUDA
+        self.use_fp16 = use_fp16 and self.device.type == 'cuda'
+
         logger.info(f"Initializing Silero Russian TTS on {self.device}")
+        if self.use_fp16:
+            logger.info("FP16 precision enabled for faster inference")
 
         try:
             # Load Silero V4 Russian model
@@ -59,10 +66,21 @@ class SileroRuSynthesizer:
             # Move model to device (in-place operation)
             model.to(self.device)
 
+            # Convert to FP16 if enabled (CUDA only)
+            if self.use_fp16:
+                model = model.half()
+                logger.info("Model converted to FP16")
+
+            # Set model to eval mode
+            model.eval()
+
             # Save reference to model
             self.model = model
 
-            logger.success(f"Silero V4 Russian TTS loaded successfully with speaker '{speaker}' on {self.device}")
+            logger.success(
+                f"Silero V4 Russian TTS loaded successfully with speaker '{speaker}' "
+                f"on {self.device} (FP16: {self.use_fp16})"
+            )
 
         except Exception as e:
             logger.error(f"Failed to load Silero TTS model: {e}")
@@ -85,11 +103,20 @@ class SileroRuSynthesizer:
             # Generate audio using Silero V4
             # Note: V4 has automatic stress (put_accent) built-in
             with torch.no_grad():
-                audio_tensor = self.model.apply_tts(
-                    text=text,
-                    speaker=self.speaker,
-                    sample_rate=self.sample_rate
-                )
+                # Use autocast for FP16 inference on CUDA
+                if self.use_fp16:
+                    with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+                        audio_tensor = self.model.apply_tts(
+                            text=text,
+                            speaker=self.speaker,
+                            sample_rate=self.sample_rate
+                        )
+                else:
+                    audio_tensor = self.model.apply_tts(
+                        text=text,
+                        speaker=self.speaker,
+                        sample_rate=self.sample_rate
+                    )
 
             # Convert to numpy array
             if isinstance(audio_tensor, torch.Tensor):
