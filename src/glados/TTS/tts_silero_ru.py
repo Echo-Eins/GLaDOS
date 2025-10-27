@@ -67,9 +67,23 @@ class SileroRuSynthesizer:
             model.to(self.device)
 
             # Convert to FP16 if enabled (CUDA only)
+            # Silero models may not support .half() directly, use .to(dtype=torch.float16)
             if self.use_fp16:
-                model = model.half()
-                logger.info("Model converted to FP16")
+                try:
+                    # Try standard PyTorch FP16 conversion
+                    if hasattr(model, 'half'):
+                        model = model.half()
+                        logger.info("Model converted to FP16 using .half()")
+                    else:
+                        # Fallback: convert all parameters to FP16
+                        model = model.to(dtype=torch.float16)
+                        logger.info("Model converted to FP16 using .to(dtype=torch.float16)")
+                except Exception as fp16_error:
+                    logger.warning(f"Failed to convert model to FP16: {fp16_error}")
+                    logger.warning("Falling back to FP32 precision")
+                    self.use_fp16 = False
+                    # Ensure model is in FP32
+                    model = model.to(dtype=torch.float32)
 
             # Set model to eval mode
             model.eval()
@@ -103,24 +117,17 @@ class SileroRuSynthesizer:
             # Generate audio using Silero V4
             # Note: V4 has automatic stress (put_accent) built-in
             with torch.no_grad():
-                # Use autocast for FP16 inference on CUDA
-                if self.use_fp16:
-                    with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
-                        audio_tensor = self.model.apply_tts(
-                            text=text,
-                            speaker=self.speaker,
-                            sample_rate=self.sample_rate
-                        )
-                else:
-                    audio_tensor = self.model.apply_tts(
-                        text=text,
-                        speaker=self.speaker,
-                        sample_rate=self.sample_rate
-                    )
+                # Silero models handle FP16 internally if model was converted
+                # Don't use autocast - it can cause issues with custom models
+                audio_tensor = self.model.apply_tts(
+                    text=text,
+                    speaker=self.speaker,
+                    sample_rate=self.sample_rate
+                )
 
             # Convert to numpy array
             if isinstance(audio_tensor, torch.Tensor):
-                audio = audio_tensor.cpu().numpy()
+                audio = audio_tensor.cpu().float().numpy()  # Convert to FP32 for CPU
             else:
                 audio = np.array(audio_tensor, dtype=np.float32)
 
@@ -137,6 +144,7 @@ class SileroRuSynthesizer:
 
         except Exception as e:
             logger.error(f"Failed to generate speech: {e}")
+            logger.exception(e)
             return np.array([], dtype=np.float32)
 
     def save_audio(self, audio: NDArray[np.float32], path: Path | str) -> None:
