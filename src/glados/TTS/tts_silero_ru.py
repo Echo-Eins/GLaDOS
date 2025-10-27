@@ -64,29 +64,81 @@ class SileroRuSynthesizer:
             )
 
             # Move model to device (in-place operation)
-            model.to(self.device)
+            to_result = model.to(self.device)
+            if to_result is not None:
+                model = to_result
 
             # Convert to FP16 if enabled (CUDA only)
             # Silero models may not support .half() directly, use .to(dtype=torch.float16)
             if self.use_fp16:
                 try:
-                    # Try standard PyTorch FP16 conversion
-                    if hasattr(model, 'half'):
-                        model = model.half()
+                    converted = None
+                    if hasattr(model, "half") and callable(getattr(model, "half")):
+                        converted = model.half()
                         logger.info("Model converted to FP16 using .half()")
+                    elif hasattr(model, "to") and callable(getattr(model, "to")):
+                        converted = model.to(torch.float16)
+                        logger.info("Model converted to FP16 using .to(torch.float16)")
                     else:
-                        # Fallback: convert all parameters to FP16
-                        model = model.to(dtype=torch.float16)
-                        logger.info("Model converted to FP16 using .to(dtype=torch.float16)")
+                        raise AttributeError("Model does not support FP16 conversion helpers")
+
+                    if converted is not None:
+                        model = converted
+                    else:
+                        logger.debug("FP16 conversion applied in-place by Silero model")
+
                 except Exception as fp16_error:
                     logger.warning(f"Failed to convert model to FP16: {fp16_error}")
                     logger.warning("Falling back to FP32 precision")
                     self.use_fp16 = False
-                    # Ensure model is in FP32
-                    model = model.to(dtype=torch.float32)
+
+                    # Ensure model precision is FP32 when FP16 is disabled or conversion failed
+                    if not self.use_fp16:
+                        try:
+                            converted = None
+                            if hasattr(model, "float") and callable(getattr(model, "float")):
+                                converted = model.float()
+                            elif hasattr(model, "to") and callable(getattr(model, "to")):
+                                converted = model.to(torch.float32)
+                            else:
+                                raise AttributeError("Model does not support FP32 conversion helpers")
+
+                            if converted is not None:
+                                model = converted
+                            else:
+                                logger.debug("FP32 conversion applied in-place by Silero model")
+                        except Exception as fp32_error:
+                            logger.warning(
+                                "Failed to convert model to FP32 explicitly: "
+                                f"{fp32_error}"
+                            )# Ensure model precision is FP32 when FP16 is disabled or conversion failed
+            if not self.use_fp16:
+                try:
+                    converted = None
+                    if hasattr(model, "float") and callable(getattr(model, "float")):
+                        converted = model.float()
+                    elif hasattr(model, "to") and callable(getattr(model, "to")):
+                        converted = model.to(torch.float32)
+                    else:
+                        raise AttributeError("Model does not support FP32 conversion helpers")
+
+                    if converted is not None:
+                        model = converted
+                    else:
+                        logger.debug("FP32 conversion applied in-place by Silero model")
+                except Exception as fp32_error:
+                    logger.warning(
+                        "Failed to convert model to FP32 explicitly: "
+                        f"{fp32_error}"
+                    )
 
             # Set model to eval mode
-            model.eval()
+            if hasattr(model, "eval") and callable(getattr(model, "eval")):
+                eval_result = model.eval()
+                if eval_result is not None:
+                    model = eval_result
+            else:
+                logger.debug("Silero model does not expose eval(); skipping eval mode switch")
 
             # Save reference to model
             self.model = model
