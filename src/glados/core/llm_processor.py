@@ -161,8 +161,9 @@ class LanguageModelProcessor:
         logger.info(f"LLM Processor: Sending batch of {len(paragraphs)} paragraphs to TTS")
 
         for paragraph in paragraphs:
-            # Clean paragraph
-            cleaned = re.sub(r"\*.*?\*|\(.*?\)", "", paragraph)
+            # Clean paragraph - remove markdown formatting
+            # Remove asterisks (markdown bold/italic) and content in parentheses/square brackets
+            cleaned = re.sub(r"\*.*?\*|\(.*?\)|\[.*?\]", "", paragraph)
             cleaned = cleaned.replace("  ", " ").strip()
 
             if cleaned and len(cleaned) > 1:  # Avoid empty or single-char strings

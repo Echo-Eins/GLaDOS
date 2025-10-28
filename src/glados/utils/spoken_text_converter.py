@@ -641,6 +641,8 @@ class SpokenTextConverter:
         text = text.replace("«", chr(8220)).replace("»", chr(8221))
         text = text.replace(chr(8220), '"').replace(chr(8221), '"')
         text = text.replace("(", "«").replace(")", "»")
+        # Handle square brackets - replace with spaces for cleaner TTS output
+        text = text.replace("[", " ").replace("]", " ")
 
         # 3. Punctuation normalization
         # a. Replace common punctuation marks
