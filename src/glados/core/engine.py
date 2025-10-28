@@ -71,6 +71,7 @@ class GladosConfig(BaseModel):
     llm_model: str
     completion_url: HttpUrl
     api_key: str | None
+    keep_alive_timeout: str = "30m"  # How long to keep LLM loaded in Ollama (e.g., "5m", "30m", "1h")
     interruptible: bool
     audio_io: str
     asr_engine: str
@@ -146,6 +147,7 @@ class Glados:
         completion_url: HttpUrl,
         llm_model: str,
         api_key: str | None = None,
+        keep_alive_timeout: str = "30m",
         interruptible: bool = True,
         wake_word: str | None = None,
         announcement: str | None = None,
@@ -166,6 +168,7 @@ class Glados:
             completion_url (HttpUrl): The URL for the LLM completion endpoint.
             llm_model (str): The name of the LLM model to use.
             api_key (str | None): API key for accessing the LLM service, if required.
+            keep_alive_timeout (str): How long to keep LLM loaded in Ollama (e.g., "5m", "30m", "1h").
             interruptible (bool): Whether the assistant can be interrupted while speaking.
             wake_word (str | None): Optional wake word to trigger the assistant.
             announcement (str | None): Optional announcement to play on startup.
@@ -176,6 +179,7 @@ class Glados:
         self.completion_url = completion_url
         self.llm_model = llm_model
         self.api_key = api_key
+        self.keep_alive_timeout = keep_alive_timeout
         self.interruptible = interruptible
         self.wake_word = wake_word
         self.announcement = announcement
@@ -186,6 +190,9 @@ class Glados:
 
         # warm up onnx ASR model, this is needed to avoid long pauses on first request
         self._asr_model.transcribe_file(resource_path("data/0.wav"))
+
+        # warm up LLM model to pre-load it into Ollama memory
+        self._warmup_llm()
 
         # Initialize events for thread synchronization
         self.processing_active_event = threading.Event()  # Indicates if input processing is active (ASR + LLM + TTS)
@@ -226,6 +233,7 @@ class Glados:
             processing_active_event=self.processing_active_event,
             shutdown_event=self.shutdown_event,
             pause_time=self.PAUSE_TIME,
+            keep_alive_timeout=self.keep_alive_timeout,
         )
 
         self.tts_synthesizer = TextToSpeechSynthesizer(
@@ -260,6 +268,68 @@ class Glados:
             self.component_threads.append(thread)
             thread.start()
             logger.info(f"Orchestrator: {name} thread started.")
+
+    def _warmup_llm(self) -> None:
+        """
+        Pre-load LLM model into Ollama memory to avoid delays on first request.
+
+        This method sends a minimal request to the Ollama API to trigger model loading.
+        The model will be kept in memory for the duration specified by keep_alive_timeout.
+        If the warmup fails, it logs a warning but does not prevent system startup.
+        """
+        import requests
+
+        logger.info(f"LLM Warmup: Pre-loading model '{self.llm_model}' into Ollama memory...")
+
+        try:
+            # Use /api/generate endpoint with empty prompt for quick warmup
+            warmup_url = str(self.completion_url).replace("/api/chat", "/api/generate")
+
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+
+            payload = {
+                "model": self.llm_model,
+                "prompt": "",  # Empty prompt for minimal processing
+                "stream": False,
+                "keep_alive": self.keep_alive_timeout,  # Keep model loaded
+            }
+
+            response = requests.post(
+                warmup_url,
+                headers=headers,
+                json=payload,
+                timeout=120,  # Allow up to 2 minutes for model loading
+            )
+
+            if response.status_code == 200:
+                logger.success(
+                    f"LLM Warmup: Model '{self.llm_model}' successfully loaded into memory. "
+                    f"Will remain loaded for {self.keep_alive_timeout}."
+                )
+            else:
+                logger.warning(
+                    f"LLM Warmup: Received HTTP {response.status_code} from Ollama. "
+                    f"Model may not be pre-loaded, but system will continue."
+                )
+
+        except requests.exceptions.Timeout:
+            logger.warning(
+                f"LLM Warmup: Timeout while loading model '{self.llm_model}'. "
+                f"The model is likely large and may take longer on first real request. "
+                f"System will continue normally."
+            )
+        except requests.exceptions.ConnectionError:
+            logger.warning(
+                f"LLM Warmup: Could not connect to Ollama at {self.completion_url}. "
+                f"Please ensure Ollama is running. System will continue but LLM requests may fail."
+            )
+        except Exception as e:
+            logger.warning(
+                f"LLM Warmup: Unexpected error during warmup: {e}. "
+                f"This is non-critical - system will continue."
+            )
 
     def play_announcement(self, interruptible: bool | None = None) -> None:
         """
@@ -325,6 +395,7 @@ class Glados:
             completion_url=config.completion_url,
             llm_model=config.llm_model,
             api_key=config.api_key,
+            keep_alive_timeout=config.keep_alive_timeout,
             interruptible=config.interruptible,
             wake_word=config.wake_word,
             announcement=config.announcement,

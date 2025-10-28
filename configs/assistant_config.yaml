@@ -2,6 +2,7 @@ Glados:
   llm_model: "llama3.2"
   completion_url: "http://localhost:11434/api/chat"
   api_key: null  # Add your API key here if needed!
+  keep_alive_timeout: "30m"  # How long to keep LLM loaded in Ollama memory (5m, 30m, 1h, etc.)
   interruptible: true
   audio_io: "sounddevice"
   asr_engine: "ctc"
