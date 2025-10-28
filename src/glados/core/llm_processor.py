@@ -71,6 +71,7 @@ class LanguageModelProcessor:
         processing_active_event: threading.Event,  # To check if we should stop streaming
         shutdown_event: threading.Event,
         pause_time: float = 0.05,
+        keep_alive_timeout: str = "30m",  # How long to keep model loaded in Ollama
     ) -> None:
         self.llm_input_queue = llm_input_queue
         self.tts_input_queue = tts_input_queue
@@ -81,6 +82,7 @@ class LanguageModelProcessor:
         self.processing_active_event = processing_active_event
         self.shutdown_event = shutdown_event
         self.pause_time = pause_time
+        self.keep_alive_timeout = keep_alive_timeout
 
         self.prompt_headers = {"Content-Type": "application/json"}
         if api_key:
@@ -216,6 +218,7 @@ class LanguageModelProcessor:
                     "model": self.model_name,
                     "stream": True,
                     "messages": self.conversation_history,
+                    "keep_alive": self.keep_alive_timeout,  # Keep model loaded in Ollama memory
                     # Add other parameters like temperature, max_tokens if needed from config
                 }
 
