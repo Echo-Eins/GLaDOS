@@ -52,13 +52,20 @@ def test_warmup(model: str = "huihui_ai/qwen2.5-abliterate:14b", keep_alive: str
         log(f"❌ Error checking Ollama: {e}")
         return
 
-    # Test 2: Warmup with /api/generate
-    log(f"\n[TEST 2] Testing warmup with model '{model}'...")
+    # Test 2: Warmup with /api/chat (with personality preprompt)
+    log(f"\n[TEST 2] Testing full warmup with model '{model}'...")
     log(f"   keep_alive: {keep_alive}")
+    log(f"   This simulates GLaDOS warmup: model loading + system prompt processing")
+
+    # Minimal system prompt for testing
+    warmup_messages = [
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": ""},  # Empty user message
+    ]
 
     warmup_payload = {
         "model": model,
-        "prompt": "",
+        "messages": warmup_messages,
         "stream": False,
         "keep_alive": keep_alive,
     }
@@ -66,23 +73,32 @@ def test_warmup(model: str = "huihui_ai/qwen2.5-abliterate:14b", keep_alive: str
     start_time = time.time()
     try:
         response = requests.post(
-            f"{base_url}/api/generate",
+            f"{base_url}/api/chat",
             json=warmup_payload,
-            timeout=120,
+            timeout=180,  # 3 minutes for full warmup
         )
         elapsed = time.time() - start_time
 
         if response.status_code == 200:
+            result = response.json()
+            response_content = result.get("message", {}).get("content", "")
             log(f"✅ Warmup successful in {elapsed:.2f}s")
             log(f"   Model '{model}' is now loaded in memory")
+            log(f"   System prompt processed and cached")
             log(f"   Will remain loaded for {keep_alive}")
+
+            if response_content:
+                log(f"   ⚠️  Model generated response ({len(response_content)} chars): '{response_content[:50]}'")
+                log(f"   Note: GLaDOS will consume and discard this response safely")
+            else:
+                log(f"   ✅ Model generated empty response (ideal)")
         else:
             log(f"❌ Warmup failed with status {response.status_code}")
             log(f"   Response: {response.text[:200]}")
             return
 
     except requests.exceptions.Timeout:
-        log(f"⚠️  Warmup timed out after 120s")
+        log(f"⚠️  Warmup timed out after 180s")
         log(f"   This is normal for large models on first load")
         log(f"   The model should be ready for subsequent requests")
     except Exception as e:

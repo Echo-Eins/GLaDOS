@@ -271,41 +271,69 @@ class Glados:
 
     def _warmup_llm(self) -> None:
         """
-        Pre-load LLM model into Ollama memory to avoid delays on first request.
+        Pre-load LLM model into Ollama memory AND process personality preprompt.
 
-        This method sends a minimal request to the Ollama API to trigger model loading.
-        The model will be kept in memory for the duration specified by keep_alive_timeout.
+        This method sends the full personality preprompt to the LLM to ensure that:
+        1. The model is loaded into VRAM
+        2. The large system prompt is processed and cached
+        3. First user request will be instant (no prompt processing delay)
+
+        The warmup response is consumed and discarded - it will never reach TTS queues
+        since this happens BEFORE thread initialization.
+
         If the warmup fails, it logs a warning but does not prevent system startup.
         """
         import requests
 
-        logger.info(f"LLM Warmup: Pre-loading model '{self.llm_model}' into Ollama memory...")
+        logger.info(f"LLM Warmup: Pre-loading model '{self.llm_model}' and processing system prompt...")
 
         try:
-            # Use /api/generate endpoint with empty prompt for quick warmup
-            warmup_url = str(self.completion_url).replace("/api/chat", "/api/generate")
-
             headers = {"Content-Type": "application/json"}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
 
+            # Use /api/chat with personality preprompt to warm up the full context
+            # This ensures the large system prompt is processed during startup
+            warmup_messages = list(self._messages)  # Copy personality preprompt
+
+            # Add an empty user message to trigger a minimal response
+            # The LLM is instructed in the system prompt not to respond to empty messages,
+            # but even if it does, we consume and discard the response safely here.
+            warmup_messages.append({"role": "user", "content": ""})
+
             payload = {
                 "model": self.llm_model,
-                "prompt": "",  # Empty prompt for minimal processing
-                "stream": False,
-                "keep_alive": self.keep_alive_timeout,  # Keep model loaded
+                "messages": warmup_messages,
+                "stream": False,  # IMPORTANT: non-streaming to get complete response at once
+                "keep_alive": self.keep_alive_timeout,
             }
 
+            logger.debug(f"LLM Warmup: Sending warmup request with {len(warmup_messages)} messages...")
+
             response = requests.post(
-                warmup_url,
+                str(self.completion_url),
                 headers=headers,
                 json=payload,
-                timeout=120,  # Allow up to 2 minutes for model loading
+                timeout=180,  # Allow up to 3 minutes for model loading + prompt processing
             )
 
             if response.status_code == 200:
+                # CRITICAL: Consume and discard the response
+                # This ensures even if LLM responded, it won't reach TTS
+                result = response.json()
+                response_content = result.get("message", {}).get("content", "")
+                response_length = len(response_content)
+
+                if response_length > 0:
+                    logger.debug(
+                        f"LLM Warmup: Model generated {response_length} chars of response "
+                        f"(consumed and discarded). First 50 chars: '{response_content[:50]}'"
+                    )
+                else:
+                    logger.debug("LLM Warmup: Model generated empty response (as expected).")
+
                 logger.success(
-                    f"LLM Warmup: Model '{self.llm_model}' successfully loaded into memory. "
+                    f"LLM Warmup: Model '{self.llm_model}' loaded and system prompt processed. "
                     f"Will remain loaded for {self.keep_alive_timeout}."
                 )
             else:
