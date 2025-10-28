@@ -161,9 +161,12 @@ class LanguageModelProcessor:
         logger.info(f"LLM Processor: Sending batch of {len(paragraphs)} paragraphs to TTS")
 
         for paragraph in paragraphs:
-            # Clean paragraph - remove markdown formatting
-            # Remove asterisks (markdown bold/italic) and content in parentheses/square brackets
-            cleaned = re.sub(r"\*.*?\*|\(.*?\)|\[.*?\]", "", paragraph)
+            # Clean paragraph for TTS
+            # Transform square brackets: [ПРОТОКОЛ] Текст → ПРОТОКОЛ: Текст
+            # This preserves visual formatting while creating natural TTS intonation
+            cleaned = re.sub(r"\[([^\]]+)\]", r"\1:", paragraph)
+            # Remove markdown formatting (asterisks and round brackets with content)
+            cleaned = re.sub(r"\*.*?\*|\(.*?\)", "", cleaned)
             cleaned = cleaned.replace("  ", " ").strip()
 
             if cleaned and len(cleaned) > 1:  # Avoid empty or single-char strings
