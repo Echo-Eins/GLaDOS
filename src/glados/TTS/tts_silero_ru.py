@@ -9,7 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 from loguru import logger
 from pathlib import Path
-
+from typing import Callable
 
 class SileroRuSynthesizer:
     """Russian TTS synthesizer using Silero V4 models.
@@ -78,19 +78,7 @@ class SileroRuSynthesizer:
 
             if self.use_fp16:
                 try:
-                    converted = None
-                    if hasattr(model, "half") and callable(getattr(model, "half")):
-                        converted = model.half()
-
-                    elif hasattr(model, "to") and callable(getattr(model, "to")):
-                        converted = model.to(dtype=torch.float16)
-                    else:
-                        raise AttributeError("Model does not support FP16 conversion helpers")
-
-                    if converted is not None:
-                        model = converted
-                    else:
-                        logger.debug("FP16 conversion applied in-place by Silero model")
+                    model = self._ensure_precision(model, torch.float16, prefer_attr="half")
 
                     logger.info("Model converted to FP16 precision")
 
@@ -107,18 +95,7 @@ class SileroRuSynthesizer:
 
             if target_dtype == torch.float32:
                 try:
-                    converted = None
-                    if hasattr(model, "float") and callable(getattr(model, "float")):
-                        converted = model.float()
-                    elif hasattr(model, "to") and callable(getattr(model, "to")):
-                        converted = model.to(dtype=torch.float32)
-                    else:
-                        raise AttributeError("Model does not support FP32 conversion helpers")
-
-                    if converted is not None:
-                        model = converted
-                    else:
-                        logger.debug("FP32 conversion applied in-place by Silero model")
+                    model = self._ensure_precision(model, torch.float32, prefer_attr="float")
                 except Exception as precision_error:
                     logger.warning(
                         "Failed to enforce FP32 precision on Silero model: {}",
@@ -206,6 +183,36 @@ class SileroRuSynthesizer:
 
         sf.write(path, audio, self.sample_rate)
         logger.info(f"Audio saved to {path}")
+
+    def _ensure_precision(
+            self,
+            model: torch.nn.Module,
+            dtype: torch.dtype,
+            *,
+            prefer_attr: str,
+    ) -> torch.nn.Module:
+        """Ensure that the Silero model tensors use the requested dtype."""
+
+        attr: Callable[[], torch.nn.Module] | None = getattr(model, prefer_attr, None)
+        if callable(attr):
+            result = attr()
+            if result is not None:
+                model = result
+        else:
+            logger.debug(
+                "Silero model does not expose %s(); attempting manual dtype conversion",
+                prefer_attr,
+            )
+
+        for param in model.parameters(recurse=True):
+            param.data = param.data.to(dtype=dtype, device=param.device)
+            if param.grad is not None:
+                param.grad.data = param.grad.data.to(dtype=dtype, device=param.grad.device)
+
+        for buffer in model.buffers(recurse=True):
+            buffer.data = buffer.data.to(dtype=dtype, device=buffer.device)
+
+        return model
 
     def __del__(self):
         """Clean up resources."""
