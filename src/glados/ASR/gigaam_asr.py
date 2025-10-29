@@ -90,24 +90,42 @@ class AudioTranscriber:
         if audio_array.ndim != 1:
             audio_array = audio_array.reshape(-1)
 
+        # Diagnostic logging
+        duration_s = len(audio_array) / self.SAMPLE_RATE
+        rms = np.sqrt(np.mean(audio_array**2))
+        max_val = np.max(np.abs(audio_array))
+        logger.debug(
+            f"GigaAM input audio: duration={duration_s:.3f}s, samples={len(audio_array)}, "
+            f"RMS={rms:.6f}, max_abs={max_val:.6f}, dtype={audio_array.dtype}"
+        )
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             temp_path = Path(tmp.name)
 
         try:
             sf.write(temp_path, audio_array, self.SAMPLE_RATE)
+            file_size = temp_path.stat().st_size
+            logger.debug(f"GigaAM temp WAV file: {temp_path} (size={file_size} bytes)")
             return self._decode_with_emotions(temp_path)
         finally:
             temp_path.unlink(missing_ok=True)
 
     def _decode_with_emotions(self, audio_path: Path) -> tuple[str, Mapping[str, float]]:
         try:
+            # Log before transcription
+            logger.debug(f"GigaAM calling ASR model on: {audio_path}")
             transcription = str(self._asr_model.transcribe(str(audio_path)))
+            logger.debug(f"GigaAM ASR raw result: '{transcription}' (length={len(transcription)})")
+
+            # Log before emotion analysis
+            logger.debug(f"GigaAM calling Emotion model on: {audio_path}")
             emotion_probs = self._emotion_model.get_probs(str(audio_path))
+            logger.debug(f"GigaAM Emotion raw result: {dict(emotion_probs)}")
         except FileNotFoundError as exc:  # pragma: no cover - depends on environment
             raise _wrap_ffmpeg_error(exc) from exc
         except Exception as e:
             # If emotion model fails, return transcription with no emotions
-            logger.error(f"Emotion model failed: {e}")
+            logger.error(f"Emotion model failed with exception: {type(e).__name__}: {e}")
             transcription = str(self._asr_model.transcribe(str(audio_path)))
             return transcription, {}
 

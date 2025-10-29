@@ -299,13 +299,25 @@ class SpeechListener:
 
         audio = np.concatenate(self._samples)
         rms_energy = np.sqrt(np.mean(audio**2))
+        duration_s = len(audio) / 16000
 
         # Always log RMS for debugging
-        logger.info(f"RMS energy: {rms_energy:.6f} | Samples: {len(self._samples)} | Total duration: {len(audio)/16000:.2f}s")
+        logger.info(f"RMS energy: {rms_energy:.6f} | Samples: {len(self._samples)} | Total duration: {duration_s:.2f}s")
 
         # Threshold: if RMS is too low, this is likely a false VAD trigger
         if rms_energy < 0.01:  # Adjust threshold based on your microphone
             logger.warning(f"🚫 Ignoring detected audio: RMS energy too low ({rms_energy:.6f} < 0.01), likely false VAD trigger")
+            self.reset()
+            return
+
+        # Check minimum duration to avoid processing very short audio segments
+        # that are likely false triggers, echoes, or incomplete speech
+        MIN_DURATION_S = 0.3
+        if duration_s < MIN_DURATION_S:
+            logger.warning(
+                f"🚫 Ignoring detected audio: Duration too short ({duration_s:.2f}s < {MIN_DURATION_S}s). "
+                f"This may be echo, noise, or incomplete speech. Speak longer phrases."
+            )
             self.reset()
             return
 
@@ -326,8 +338,9 @@ class SpeechListener:
             if rms_energy >= 0.01:
                 logger.error(
                     f"⚠️ ANOMALY DETECTED: RMS energy was high ({rms_energy:.6f} >= 0.01) "
-                    f"but ASR returned empty text! Real speech may have been lost. "
-                    f"Please speak again."
+                    f"but ASR returned empty text! Duration: {duration_s:.2f}s. "
+                    f"This may indicate: 1) Echo/noise mistaken for speech, 2) Audio quality issues, "
+                    f"or 3) Speech too unclear to recognize. Try speaking louder and more clearly."
                 )
 
         self.reset()
