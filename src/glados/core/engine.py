@@ -21,6 +21,7 @@ from ..TTS import SpeechSynthesizerProtocol, get_speech_synthesizer
 from ..utils import spoken_text_converter as stc
 from ..utils.resources import resource_path
 from .audio_data import AudioMessage, RecognitionResult, TTSTextMessage
+from .chat_logger import ChatLogger
 from .llm_processor import LanguageModelProcessor
 from .speech_listener import SpeechListener
 from .speech_player import SpeechPlayer
@@ -72,6 +73,9 @@ class GladosConfig(BaseModel):
     completion_url: HttpUrl
     api_key: str | None
     keep_alive_timeout: str = "30m"  # How long to keep LLM loaded in Ollama (e.g., "5m", "30m", "1h")
+    enable_thinking: bool = False  # Enable thinking mode by default (auto-enabled for complex queries)
+    thinking_trigger_words: list[str] = []  # Keywords that activate thinking mode via fuzzy matching
+    thinking_fuzzy_threshold: float = 0.75  # Fuzzy matching threshold (0.0-1.0)
     interruptible: bool
     audio_io: str
     asr_engine: str
@@ -233,6 +237,9 @@ class Glados:
             shutdown_event=self.shutdown_event,
             pause_time=self.PAUSE_TIME,
             keep_alive_timeout=self.keep_alive_timeout,
+            enable_thinking=self.enable_thinking,
+            thinking_trigger_words=self.thinking_trigger_words,
+            thinking_fuzzy_threshold=self.thinking_fuzzy_threshold,
         )
 
         self.tts_synthesizer = TextToSpeechSynthesizer(
@@ -267,6 +274,12 @@ class Glados:
             self.component_threads.append(thread)
             thread.start()
             logger.info(f"Orchestrator: {name} thread started.")
+
+        # Initialize chat logger and start session
+        self.chat_logger = ChatLogger()
+        self.chat_logger.start_session(self._messages)
+        # Pass chat logger to LLM processor for message logging
+        self.llm_processor.chat_logger = self.chat_logger
 
         # warm up LLM model to pre-load it into Ollama memory in background thread
         # IMPORTANT: Do this AFTER all threads are started so audio system is operational
@@ -500,6 +513,11 @@ class Glados:
                         self.audio_io.stop_speaking()
                         self.currently_speaking_event.clear()
                         break
+
+            # End chat session before shutdown
+            if hasattr(self, 'chat_logger'):
+                self.chat_logger.end_session(reason="manual")
+
             self.shutdown_event.set()
             # Give threads a moment to notice the shutdown event
             time.sleep(self.PAUSE_TIME)
