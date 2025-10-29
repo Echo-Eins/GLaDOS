@@ -354,14 +354,19 @@ class SpeechListener:
         audio = audio / max_abs_val
 
         emotions = None
-        detected_text = ""
 
         if hasattr(self.asr_model, "transcribe_with_emotions"):
-            text, emotions = getattr(self.asr_model, "transcribe_with_emotions")(audio)
-            detected_text = text
+            detected_text, emotions = getattr(self.asr_model, "transcribe_with_emotions")(audio)
             # Sanitize emotions to remove NaN/inf values that would break JSON serialization
             emotions = sanitize_emotions(emotions)
         else:
             detected_text = self.asr_model.transcribe(audio)
+
+        # Strip whitespace and check if result is empty
+        detected_text = (detected_text or "").strip()
+
+        if not detected_text:
+            logger.warning("ASR produced empty or whitespace-only transcription")
+            return RecognitionResult(text="", emotions=emotions)
 
         return RecognitionResult(text=detected_text, emotions=emotions)
