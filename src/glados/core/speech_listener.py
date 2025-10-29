@@ -66,7 +66,7 @@ class SpeechListener:
     PAUSE_LIMIT: int = 640  # Milliseconds of pause allowed before processing
     SIMILARITY_THRESHOLD: int = 2  # Threshold for wake word similarity
     ECHO_GRACE_PERIOD: float = 0.8  # Seconds to ignore VAD after speaking ends (acoustic echo suppression)
-    MIN_VOICE_ACTIVITY_RATIO: float = 0.35  # Minimum fraction of VAD-positive frames required to treat audio as speech
+    MIN_VOICE_ACTIVITY_RATIO: float = 0.20  # Minimum fraction of VAD-positive frames required to treat audio as speech
 
     def __init__(
         self,
