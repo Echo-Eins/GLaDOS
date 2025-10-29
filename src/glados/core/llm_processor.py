@@ -249,8 +249,9 @@ class LanguageModelProcessor:
                 detected_text = recognition.text
                 emotions = recognition.emotions
 
-                if not detected_text:
-                    logger.info("LLM Processor: Received empty ASR result, skipping request.")
+                # Check for empty or whitespace-only text
+                if not detected_text or not detected_text.strip():
+                    logger.info("LLM Processor: Received empty ASR result (whitespace only), skipping request.")
                     continue
 
                 if not self.processing_active_event.is_set():  # Check if we were interrupted before starting
@@ -261,16 +262,20 @@ class LanguageModelProcessor:
 
                 logger.info(f"LLM Processor: Received text for LLM: '{detected_text}'")
 
-                # Format user message with emotions if available
+                # Format user message with emotions if available and valid
                 user_content = detected_text
                 if emotions:
                     logger.info(f"LLM Processor: Emotion probabilities {dict(emotions)}")
                     # Sanitize emotions to prevent JSON serialization errors with NaN/inf values
                     sanitized_emotions = sanitize_emotions_for_json(emotions)
-                    if sanitized_emotions:
+
+                    # Only append emotions if at least one value is meaningful (> 0.01)
+                    if sanitized_emotions and any(val > 0.01 for val in sanitized_emotions.values()):
                         # Append emotions to user message in format: "text" {'emotion': value, ...}
                         user_content = f'"{detected_text}" {sanitized_emotions}'
                         logger.debug(f"LLM Processor: User message with emotions: {user_content}")
+                    else:
+                        logger.debug("LLM Processor: All emotions near zero, not appending to message")
 
                 self.conversation_history.append({"role": "user", "content": user_content})
 
