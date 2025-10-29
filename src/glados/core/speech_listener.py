@@ -463,10 +463,39 @@ class SpeechListener:
 
         audio = np.concatenate(samples)
 
-        # Check for silent audio
+        # Check audio amplitude and signal strength
         max_abs_val = np.max(np.abs(audio))
+        rms_val = np.sqrt(np.mean(audio**2))
+        logger.debug(f"ASR input | max_amplitude={max_abs_val:.6f}, RMS={rms_val:.6f}, samples={len(audio)}")
+
         if max_abs_val < 1e-10:  # Threshold for effectively silent audio
             logger.warning("ASR received effectively silent audio")
+            return RecognitionResult(text="", emotions=None)
+
+        # CRITICAL: Check signal amplitude BEFORE normalization
+        # Even if RMS is adequate, if max amplitude is very low, this is likely
+        # background noise or echo that will produce garbage after normalization
+        MIN_SIGNAL_AMPLITUDE = 0.01  # Minimum peak amplitude for valid speech
+        if max_abs_val < MIN_SIGNAL_AMPLITUDE:
+            logger.warning(
+                f"🚫 ASR: Signal amplitude too low (max={max_abs_val:.6f} < {MIN_SIGNAL_AMPLITUDE}). "
+                f"This is likely background noise or echo, not real speech. Skipping ASR to avoid NaN."
+            )
+            return RecognitionResult(text="", emotions=None)
+
+        # Additional check: peak-to-RMS ratio (crest factor)
+        # Real speech typically has crest factor of 3-6
+        # Pure noise/echo often has abnormal ratios (very high or very low)
+        crest_factor = max_abs_val / rms_val if rms_val > 1e-10 else 0
+        logger.debug(f"ASR crest factor (peak/RMS): {crest_factor:.2f}")
+
+        # If crest factor is abnormally high (>20), it's likely a spike/click, not speech
+        MAX_CREST_FACTOR = 20.0
+        if crest_factor > MAX_CREST_FACTOR:
+            logger.warning(
+                f"🚫 ASR: Abnormal crest factor ({crest_factor:.2f} > {MAX_CREST_FACTOR}). "
+                f"Signal contains spikes/clicks, not speech. Skipping ASR to avoid NaN."
+            )
             return RecognitionResult(text="", emotions=None)
 
         # Normalize to full range [-1.0, 1.0]
