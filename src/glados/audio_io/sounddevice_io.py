@@ -261,6 +261,10 @@ class SoundDeviceAudioIO:
             self._stop_event.set()
             sd.stop()
 
+            # CRITICAL: Wait for PortAudio to fully flush internal buffers
+            # Without wait(), buffers can accumulate after 15+ playbacks causing distortion
+            sd.wait()
+
             self._is_playing = False
 
     def get_sample_queue(self) -> queue.Queue[tuple[NDArray[np.float32], bool]]:

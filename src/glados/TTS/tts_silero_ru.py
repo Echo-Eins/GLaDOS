@@ -162,6 +162,12 @@ class SileroRuSynthesizer:
 
             logger.debug(f"Generated {len(audio)/self.sample_rate:.2f}s of audio for text: '{text[:50]}...'")
 
+            # CRITICAL: Clear CUDA cache to prevent memory/cache accumulation
+            # After 15+ TTS generations, accumulated cache can cause audio distortion
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+                logger.debug("Cleared CUDA cache after TTS generation")
+
             return audio
 
         except Exception as e:

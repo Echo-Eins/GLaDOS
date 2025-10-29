@@ -523,6 +523,14 @@ class RVCProcessor:
                 )
 
             logger.debug(f"RVC conversion complete: {len(converted_audio)/input_sample_rate:.2f}s")
+
+            # CRITICAL: Clear CUDA cache to prevent memory/cache accumulation
+            # RVC creates many intermediate tensors (resampling, FP16 conversion, inference, etc.)
+            # After 15+ conversions, accumulated cache can cause audio distortion ("хрюканье")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.debug("Cleared CUDA cache after RVC processing")
+
             return converted_audio
 
         except Exception as e:
