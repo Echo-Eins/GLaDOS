@@ -67,8 +67,15 @@ class AudioTranscriber:
         logger.info(f"GigaAM inference backend: {self.device.upper()}")
         logger.info(f"GigaAM encoder precision: {'fp16' if use_fp16 else 'fp32'}")
 
-        self._asr_model = gigaam.load_model("rnnt", fp16_encoder=fp16_encoder, device=resolved_device)
-        self._emotion_model = gigaam.load_model("emo", fp16_encoder=fp16_encoder, device=resolved_device)
+        #self._asr_model = gigaam.load_model("rnnt", fp16_encoder=fp16_encoder, device=resolved_device)
+        #self._emotion_model = gigaam.load_model("emo", fp16_encoder=fp16_encoder, device=resolved_device)
+
+        # Always use the resolved precision when loading the models.  Passing the
+        # original ``fp16_encoder`` flag here would force fp16 even on CPU and
+        # quickly lead to NaNs from the Torch runtime after the first
+        # transcription round.
+        self._asr_model = gigaam.load_model("rnnt", fp16_encoder=use_fp16, device=resolved_device)
+        self._emotion_model = gigaam.load_model("emo", fp16_encoder=use_fp16, device=resolved_device)
 
     def transcribe(self, audio_source: NDArray[Any]) -> str:
         text, _ = self.transcribe_with_emotions(audio_source)
