@@ -292,15 +292,22 @@ class SpeechListener:
         logger.debug("Detected pause after speech. Processing...")
 
         # Check if samples contain actual speech energy (not just silence/noise)
-        if self._samples:
-            audio = np.concatenate(self._samples)
-            rms_energy = np.sqrt(np.mean(audio**2))
+        if not self._samples:
+            logger.warning("No samples collected, skipping ASR")
+            self.reset()
+            return
 
-            # Threshold: if RMS is too low, this is likely a false VAD trigger
-            if rms_energy < 0.01:  # Adjust threshold based on your microphone
-                logger.debug(f"Ignoring detected audio: RMS energy too low ({rms_energy:.4f} < 0.01), likely false VAD trigger")
-                self.reset()
-                return
+        audio = np.concatenate(self._samples)
+        rms_energy = np.sqrt(np.mean(audio**2))
+
+        # Always log RMS for debugging
+        logger.info(f"RMS energy: {rms_energy:.6f} | Samples: {len(self._samples)} | Total duration: {len(audio)/16000:.2f}s")
+
+        # Threshold: if RMS is too low, this is likely a false VAD trigger
+        if rms_energy < 0.01:  # Adjust threshold based on your microphone
+            logger.warning(f"🚫 Ignoring detected audio: RMS energy too low ({rms_energy:.6f} < 0.01), likely false VAD trigger")
+            self.reset()
+            return
 
         recognition = self.asr(self._samples)
 
