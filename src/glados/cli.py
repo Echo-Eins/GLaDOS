@@ -246,12 +246,17 @@ def start(config_path: str | Path = "glados_config.yaml", *, language: str | Non
         glados.run()
 
 
-def tui(config_path: str | Path = "glados_config.yaml") -> None:
+def tui(config_path: str | Path = "glados_config.yaml", *, language: str | None = None) -> None:
     """
     Start the GLaDOS voice assistant with a terminal user interface (TUI).
 
     This function initializes the GLaDOS TUI application, which provides decorative
     interface elements for voice interactions.
+
+    Parameters:
+        config_path (str | Path, optional): Path to the configuration YAML file.
+        language (str | None, optional): Override ASR language ('en' or 'ru').
+
     STABLE
     """
     # Protect ENTIRE function - fairseq may be imported during class instantiation!
@@ -259,7 +264,8 @@ def tui(config_path: str | Path = "glados_config.yaml") -> None:
         import glados.tui as tui_module
 
         try:
-            app = tui_module.GladosUI()
+            # Pass language override to TUI if provided
+            app = tui_module.GladosUI(config_path=config_path, language=language)
             app.run()
         except KeyboardInterrupt:
             sys.exit()
@@ -308,6 +314,18 @@ def main() -> int:
 
     # TUI command
     tui_parser = subparsers.add_parser("tui", help="Start GLaDOS voice assistant with TUI")
+    tui_parser.add_argument(
+        "--config",
+        type=str,
+        default=DEFAULT_CONFIG,
+        help=f"Path to configuration file (default: {DEFAULT_CONFIG})",
+    )
+    tui_parser.add_argument(
+        "--language",
+        type=str,
+        choices=["en", "ru"],
+        help="Override ASR language without editing the configuration file.",
+    )
 
     # Say command
     say_parser = subparsers.add_parser("say", help="Make GLaDOS speak text")
@@ -332,7 +350,10 @@ def main() -> int:
         elif args.command == "start":
             start(args.config, language=getattr(args, "language", None))
         elif args.command == "tui":
-            tui()
+            tui(
+                config_path=getattr(args, "config", DEFAULT_CONFIG),
+                language=getattr(args, "language", None)
+            )
         else:
             # Default to start if no command specified
             start(DEFAULT_CONFIG)
