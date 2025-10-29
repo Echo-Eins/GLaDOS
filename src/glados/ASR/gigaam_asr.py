@@ -128,6 +128,14 @@ class AudioTranscriber:
             logger.debug(f"GigaAM calling Emotion model on: {audio_path}")
             emotion_probs = self._emotion_model.get_probs(str(audio_path))
             logger.debug(f"GigaAM Emotion raw result: {dict(emotion_probs)}")
+
+            # CRITICAL: Clear CUDA cache to prevent memory accumulation
+            # GigaAM models don't have explicit reset(), so we clear torch cache
+            if self.device.startswith("cuda"):
+                import torch
+                torch.cuda.empty_cache()
+                logger.debug("Cleared CUDA cache after GigaAM processing")
+
         except FileNotFoundError as exc:  # pragma: no cover - depends on environment
             raise _wrap_ffmpeg_error(exc) from exc
         except Exception as e:

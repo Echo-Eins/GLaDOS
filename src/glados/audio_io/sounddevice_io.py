@@ -41,6 +41,7 @@ class SoundDeviceAudioIO:
             raise ValueError("VAD threshold must be between 0 and 1")
 
         self._vad_model = VAD()
+        self._vad_lock = threading.Lock()  # Thread-safe VAD access
 
         self._sample_queue: queue.Queue[tuple[NDArray[np.float32], bool]] = queue.Queue()
         self.input_stream: sd.InputStream | None = None
@@ -86,7 +87,11 @@ class SoundDeviceAudioIO:
                 logger.debug(f"Audio callback status: {status}")
 
             data = np.array(indata).copy().squeeze()  # Reduce to single channel if necessary
-            vad_value = self._vad_model(np.expand_dims(data, 0))
+
+            # Thread-safe VAD access to prevent race condition with reset_vad_state()
+            with self._vad_lock:
+                vad_value = self._vad_model(np.expand_dims(data, 0))
+
             vad_confidence = vad_value > self.vad_threshold
             self._sample_queue.put((data, bool(vad_confidence)))
 
@@ -241,6 +246,9 @@ class SoundDeviceAudioIO:
         accumulated noise/echo from affecting future voice activity detection.
         This should be called after processing each speech segment to ensure
         clean state for the next segment.
+
+        Thread-safe: Uses lock to prevent race condition with audio callback.
         """
         logger.debug("Resetting VAD model state...")
-        self._vad_model.reset_states()
+        with self._vad_lock:
+            self._vad_model.reset_states()
