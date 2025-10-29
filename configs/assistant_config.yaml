@@ -3,6 +3,14 @@ Glados:
   completion_url: "http://localhost:11434/api/chat"
   api_key: null  # Add your API key here if needed!
   keep_alive_timeout: "30m"  # How long to keep LLM loaded in Ollama memory (5m, 30m, 1h, etc.)
+  enable_thinking: false  # Enable/disable thinking mode by default (turned on automatically for complex queries)
+  thinking_trigger_words:  # Keywords that activate thinking mode (fuzzy matching)
+    - "explain"
+    - "why"
+    - "how does"
+    - "analyze"
+    - "compare"
+  thinking_fuzzy_threshold: 0.75  # Fuzzy matching threshold (0.0-1.0)
   interruptible: true
   audio_io: "sounddevice"
   asr_engine: "ctc"

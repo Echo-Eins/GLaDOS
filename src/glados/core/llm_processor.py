@@ -72,6 +72,9 @@ class LanguageModelProcessor:
         shutdown_event: threading.Event,
         pause_time: float = 0.05,
         keep_alive_timeout: str = "30m",  # How long to keep model loaded in Ollama
+        enable_thinking: bool = False,  # Enable thinking mode by default
+        thinking_trigger_words: list[str] | None = None,  # Keywords that activate thinking mode
+        thinking_fuzzy_threshold: float = 0.75,  # Fuzzy matching threshold
     ) -> None:
         self.llm_input_queue = llm_input_queue
         self.tts_input_queue = tts_input_queue
@@ -83,6 +86,9 @@ class LanguageModelProcessor:
         self.shutdown_event = shutdown_event
         self.pause_time = pause_time
         self.keep_alive_timeout = keep_alive_timeout
+        self.enable_thinking = enable_thinking
+        self.thinking_trigger_words = thinking_trigger_words or []
+        self.thinking_fuzzy_threshold = thinking_fuzzy_threshold
 
         self.prompt_headers = {"Content-Type": "application/json"}
         if api_key:
@@ -90,6 +96,48 @@ class LanguageModelProcessor:
 
         # Sequence counter for paragraph ordering
         self.sequence_counter = 0
+
+        # Paragraph buffer for accumulating text until \n\n
+        self.paragraph_buffer_text = ""
+
+        # Chat logger (will be set by engine after initialization)
+        self.chat_logger = None
+
+    def _should_enable_thinking(self, user_text: str) -> bool:
+        """
+        Determine if thinking mode should be enabled for the given user text.
+        Uses fuzzy matching to check if any trigger words are present.
+
+        Args:
+            user_text: The user's input text
+
+        Returns:
+            bool: True if thinking mode should be enabled
+        """
+        if not self.thinking_trigger_words:
+            return self.enable_thinking  # Return default if no trigger words configured
+
+        user_text_lower = user_text.lower()
+
+        # Try using rapidfuzz for better performance (fallback to simple matching if not available)
+        try:
+            from rapidfuzz import fuzz
+
+            for keyword in self.thinking_trigger_words:
+                # Use partial_ratio for substring matching
+                ratio = fuzz.partial_ratio(keyword.lower(), user_text_lower)
+                if ratio >= self.thinking_fuzzy_threshold * 100:
+                    logger.info(f"Thinking mode activated by keyword '{keyword}' (match: {ratio}%)")
+                    return True
+        except ImportError:
+            # Fallback to simple substring matching if rapidfuzz not available
+            logger.debug("rapidfuzz not available, using simple substring matching")
+            for keyword in self.thinking_trigger_words:
+                if keyword.lower() in user_text_lower:
+                    logger.info(f"Thinking mode activated by keyword '{keyword}'")
+                    return True
+
+        return self.enable_thinking  # Return default if no matches
 
     def _clean_raw_bytes(self, line: bytes) -> dict[str, str] | None:
         """
@@ -181,6 +229,10 @@ class LanguageModelProcessor:
                 logger.debug(f"LLM Processor: Queuing paragraph #{msg.sequence_num}: '{cleaned[:50]}...'")
                 self.tts_input_queue.put(msg)
 
+                # Log TTS paragraph to chat logger
+                if self.chat_logger:
+                    self.chat_logger.log_tts_paragraph(cleaned, msg.sequence_num)
+
     def run(self) -> None:
         """
         Starts the main loop for the LanguageModelProcessor thread.
@@ -209,28 +261,53 @@ class LanguageModelProcessor:
 
                 logger.info(f"LLM Processor: Received text for LLM: '{detected_text}'")
 
+                # Format user message with emotions if available
+                user_content = detected_text
                 if emotions:
                     logger.info(f"LLM Processor: Emotion probabilities {dict(emotions)}")
+                    # Sanitize emotions to prevent JSON serialization errors with NaN/inf values
+                    sanitized_emotions = sanitize_emotions_for_json(emotions)
+                    if sanitized_emotions:
+                        # Append emotions to user message in format: "text" {'emotion': value, ...}
+                        user_content = f'"{detected_text}" {sanitized_emotions}'
+                        logger.debug(f"LLM Processor: User message with emotions: {user_content}")
 
-                self.conversation_history.append({"role": "user", "content": detected_text})
+                self.conversation_history.append({"role": "user", "content": user_content})
+
+                # Log user message to chat logger
+                if self.chat_logger:
+                    self.chat_logger.log_message("user", user_content)
+
+                # Determine if thinking mode should be enabled for this request
+                enable_thinking_for_request = self._should_enable_thinking(detected_text)
 
                 data = {
                     "model": self.model_name,
                     "stream": True,
                     "messages": self.conversation_history,
                     "keep_alive": self.keep_alive_timeout,  # Keep model loaded in Ollama memory
-                    # Add other parameters like temperature, max_tokens if needed from config
                 }
 
-                if emotions:
-                    # Sanitize emotions to prevent JSON serialization errors with NaN/inf values
-                    sanitized_emotions = sanitize_emotions_for_json(emotions)
-                    if sanitized_emotions:
-                        data["metadata"] = {"emotions": sanitized_emotions}
+                # Add thinking mode configuration for Ollama (GLM-4.6 via vLLM/SGLang format)
+                if self.thinking_trigger_words:  # Only add if trigger words are configured
+                    data["extra_body"] = {
+                        "chat_template_kwargs": {
+                            "enable_thinking": enable_thinking_for_request
+                        }
+                    }
+                    if enable_thinking_for_request:
+                        logger.info("Thinking mode enabled for this request")
+                    else:
+                        logger.debug("Thinking mode disabled for this request")
+
+                # Clear paragraph buffer for new request
+                self.paragraph_buffer_text = ""
 
                 # Paragraph-based parsing for parallel TTS processing
-                paragraph_buffer: list[str] = []  # Current paragraph being built
-                paragraph_batch: list[str] = []  # Batch of complete paragraphs (max 3)
+                paragraph_batch: list[str] = []  # Batch of complete paragraphs
+
+                # Accumulate full assistant response for logging
+                assistant_response_chunks: list[str] = []
 
                 try:
                     with requests.post(
@@ -253,30 +330,44 @@ class LanguageModelProcessor:
                                 if cleaned_line_data:
                                     chunk = self._process_chunk(cleaned_line_data)
                                     if chunk:  # Chunk can be an empty string, but None means no actual content
-                                        paragraph_buffer.append(chunk)
+                                        # Accumulate chunk for full response logging
+                                        assistant_response_chunks.append(chunk)
 
-                                        # Check for paragraph break (double newline)
-                                        if "\n\n" in chunk:
-                                            # Complete paragraph detected
-                                            paragraph_text = "".join(paragraph_buffer)
-                                            paragraph_buffer = []
+                                        # Add chunk to running buffer
+                                        self.paragraph_buffer_text += chunk
 
-                                            # Add to batch
-                                            paragraph_batch.append(paragraph_text)
+                                        # Check for paragraph breaks in accumulated buffer
+                                        while "\n\n" in self.paragraph_buffer_text:
+                                            # Find first paragraph break
+                                            idx = self.paragraph_buffer_text.find("\n\n")
+                                            paragraph_text = self.paragraph_buffer_text[:idx]
+                                            # Keep remaining text after \n\n for next paragraph
+                                            self.paragraph_buffer_text = self.paragraph_buffer_text[idx+2:]
 
-                                            # Send batch when we have 3 paragraphs
-                                            if len(paragraph_batch) >= self.PARAGRAPH_BATCH_SIZE:
-                                                self._send_paragraph_batch(paragraph_batch)
-                                                paragraph_batch = []
+                                            # Add completed paragraph to batch
+                                            if paragraph_text.strip():  # Skip empty paragraphs
+                                                paragraph_batch.append(paragraph_text)
 
-                                        # Also split on sentence endings if no paragraph break for a while
-                                        elif chunk.strip() in {".", "!", "?", "?!"} and len("".join(paragraph_buffer)) > 200:
-                                            # Long paragraph without break - split it
-                                            paragraph_text = "".join(paragraph_buffer)
-                                            paragraph_buffer = []
-                                            paragraph_batch.append(paragraph_text)
+                                                # Send batch immediately when we have a complete paragraph
+                                                # (dynamic batching - no need to wait for 3 paragraphs)
+                                                if len(paragraph_batch) >= 1:
+                                                    self._send_paragraph_batch(paragraph_batch)
+                                                    paragraph_batch = []
 
-                                            if len(paragraph_batch) >= self.PARAGRAPH_BATCH_SIZE:
+                                        # Fallback: split long paragraphs without breaks (>500 chars)
+                                        # This prevents buffering indefinitely for very long text without \n\n
+                                        if len(self.paragraph_buffer_text) > 500:
+                                            # Look for sentence ending
+                                            last_period = max(
+                                                self.paragraph_buffer_text.rfind('.'),
+                                                self.paragraph_buffer_text.rfind('!'),
+                                                self.paragraph_buffer_text.rfind('?')
+                                            )
+                                            if last_period > 200:  # Ensure meaningful chunk
+                                                paragraph_text = self.paragraph_buffer_text[:last_period+1]
+                                                self.paragraph_buffer_text = self.paragraph_buffer_text[last_period+1:]
+
+                                                paragraph_batch.append(paragraph_text)
                                                 self._send_paragraph_batch(paragraph_batch)
                                                 paragraph_batch = []
 
@@ -289,14 +380,21 @@ class LanguageModelProcessor:
 
                         # After loop, process any remaining content if not interrupted
                         if self.processing_active_event.is_set():
-                            # Add remaining paragraph buffer to batch
-                            if paragraph_buffer:
-                                paragraph_text = "".join(paragraph_buffer)
-                                paragraph_batch.append(paragraph_text)
+                            # Add remaining buffer to batch
+                            if self.paragraph_buffer_text.strip():
+                                paragraph_batch.append(self.paragraph_buffer_text)
+                                self.paragraph_buffer_text = ""  # Clear buffer
 
                             # Send any remaining paragraphs
                             if paragraph_batch:
                                 self._send_paragraph_batch(paragraph_batch)
+
+                        # Log full assistant response to conversation history and chat logger
+                        full_assistant_response = "".join(assistant_response_chunks)
+                        if full_assistant_response.strip():
+                            self.conversation_history.append({"role": "assistant", "content": full_assistant_response})
+                            if self.chat_logger:
+                                self.chat_logger.log_message("assistant", full_assistant_response)
 
                 except requests.exceptions.ConnectionError as e:
                     logger.error(f"LLM Processor: Connection error to LLM service: {e}")
