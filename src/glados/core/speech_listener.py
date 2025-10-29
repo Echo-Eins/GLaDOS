@@ -66,6 +66,7 @@ class SpeechListener:
     PAUSE_LIMIT: int = 640  # Milliseconds of pause allowed before processing
     SIMILARITY_THRESHOLD: int = 2  # Threshold for wake word similarity
     ECHO_GRACE_PERIOD: float = 0.8  # Seconds to ignore VAD after speaking ends (acoustic echo suppression)
+    MIN_VOICE_ACTIVITY_RATIO: float = 0.35  # Minimum fraction of VAD-positive frames required to treat audio as speech
 
     def __init__(
         self,
@@ -99,13 +100,20 @@ class SpeechListener:
         self.pause_time = pause_time
         self.interruptible = interruptible
 
-        # Circular buffer to hold pre-activation samples
-        self._buffer: deque[NDArray[np.float32]] = deque(maxlen=self.BUFFER_SIZE // self.VAD_SIZE)
+        ## Circular buffer to hold pre-activation samples
+        #self._buffer: deque[NDArray[np.float32]] = deque(maxlen=self.BUFFER_SIZE // self.VAD_SIZE)
+
+        # Circular buffer to hold pre-activation samples alongside their VAD decisions
+        self._buffer: deque[tuple[NDArray[np.float32], bool]] = deque(
+            maxlen=self.BUFFER_SIZE // self.VAD_SIZE
+        )
+
         self._sample_queue = self.audio_io.get_sample_queue()
 
         # Internal state variables
         self._recording_started = False
         self._samples: list[NDArray[np.float32]] = []
+        self._vad_flags: list[bool] = []
         self._gap_counter = 0
 
         # Echo suppression: track when assistant stopped speaking
@@ -187,7 +195,9 @@ class SpeechListener:
             sample: The current audio sample (numpy array) to be added to the buffer.
             vad_confidence: True if voice activity is detected in the sample, False otherwise.
         """
-        self._buffer.append(sample)  # Automatically handles overflow
+        #self._buffer.append(sample)  # Automatically handles overflow
+
+        self._buffer.append((sample, vad_confidence))  # Automatically handles overflow
 
         # Track speaking state transitions to detect when echo grace period should start
         is_currently_speaking = self.currently_speaking_event.is_set()
@@ -210,7 +220,11 @@ class SpeechListener:
 
             self.audio_io.stop_speaking()
             self.processing_active_event.clear()
-            self._samples = list(self._buffer)  # Clean conversion
+            #self._samples = list(self._buffer)  # Clean conversion
+
+            self._samples = [chunk for chunk, _ in self._buffer]
+            self._vad_flags = [flag for _, flag in self._buffer]
+
             self._recording_started = True
 
     def _process_activated_audio(self, sample: NDArray[np.float32], vad_confidence: bool) -> None:
@@ -227,6 +241,8 @@ class SpeechListener:
             vad_confidence: True if voice activity is currently detected, False otherwise.
         """
         self._samples.append(sample)
+
+        self._vad_flags.append(vad_confidence)
 
         if not vad_confidence:
             self._gap_counter += 1
@@ -273,6 +289,9 @@ class SpeechListener:
         logger.debug("Resetting recorder...")
         self._recording_started = False
         self._samples.clear()
+
+        self._vad_flags.clear()
+
         self._gap_counter = 0
         self._buffer.clear()
 
@@ -320,6 +339,27 @@ class SpeechListener:
             )
             self.reset()
             return
+
+            # Require a sufficient proportion of frames with positive VAD confidence.
+            # This helps suppress persistent false activations triggered by echo or noise.
+            total_frames = len(self._vad_flags)
+            voiced_frames = sum(1 for flag in self._vad_flags if flag)
+            voice_ratio = (voiced_frames / total_frames) if total_frames else 0.0
+            logger.debug(
+                "Voice activity stats | total_frames={} | voiced_frames={} | ratio={:.2f}",
+                total_frames,
+                voiced_frames,
+                voice_ratio,
+            )
+            if voice_ratio < self.MIN_VOICE_ACTIVITY_RATIO:
+                logger.warning(
+                    "🚫 Ignoring detected audio: voice activity ratio too low ({:.0f}% < {:.0f}%). "
+                    "Likely echo or background noise.",
+                    voice_ratio * 100,
+                    self.MIN_VOICE_ACTIVITY_RATIO * 100,
+                )
+                self.reset()
+                return
 
         recognition = self.asr(self._samples)
 
