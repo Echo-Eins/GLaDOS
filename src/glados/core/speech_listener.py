@@ -295,6 +295,7 @@ class SpeechListener:
         - Clearing the accumulated `_samples`.
         - Resetting the `_gap_counter`.
         - Emptying the pre-activation circular buffer (`_buffer.queue`), safely using its internal mutex.
+        - Resetting VAD model state to prevent accumulated noise from affecting future detections.
         """
         logger.debug("Resetting recorder...")
         self._recording_started = False
@@ -305,6 +306,10 @@ class SpeechListener:
 
         self._gap_counter = 0
         self._buffer.clear()
+
+        # CRITICAL: Reset VAD model state to clear accumulated context and internal state
+        # This prevents noise/echo from previous segments from affecting future VAD decisions
+        self.audio_io.reset_vad_state()
 
     def _process_detected_audio(self) -> None:
         """

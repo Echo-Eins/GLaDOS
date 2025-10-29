@@ -233,3 +233,14 @@ class SoundDeviceAudioIO:
                         (audio_sample, vad_confidence)
         """
         return self._sample_queue
+
+    def reset_vad_state(self) -> None:
+        """Reset VAD model internal state.
+
+        Clears the internal state and context of the VAD model to prevent
+        accumulated noise/echo from affecting future voice activity detection.
+        This should be called after processing each speech segment to ensure
+        clean state for the next segment.
+        """
+        logger.debug("Resetting VAD model state...")
+        self._vad_model.reset_states()
