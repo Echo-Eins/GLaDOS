@@ -196,13 +196,8 @@ class SpeechListener:
             sample: The current audio sample (numpy array) to be added to the buffer.
             vad_confidence: True if voice activity is detected in the sample, False otherwise.
         """
-        #self._buffer.append(sample)  # Automatically handles overflow
-
-        is_currently_speaking = self.currently_speaking_event.is_set()
-        self._buffer.append((sample, vad_confidence, is_currently_speaking))  # Automatically handles overflow
-
         # Track speaking state transitions to detect when echo grace period should start
-        #is_currently_speaking = self.currently_speaking_event.is_set()
+        is_currently_speaking = self.currently_speaking_event.is_set()
         if self._was_speaking and not is_currently_speaking:
             # Transition from speaking to not speaking - start grace period
             self._last_speaking_end_time = time.time()
@@ -214,21 +209,32 @@ class SpeechListener:
             time_since_speaking_ended = time.time() - self._last_speaking_end_time
             if time_since_speaking_ended < self.ECHO_GRACE_PERIOD:
                 logger.debug(f"VAD detected but within echo grace period ({time_since_speaking_ended:.2f}s < {self.ECHO_GRACE_PERIOD}s), ignoring")
+                # CRITICAL: Still add to buffer to maintain continuity, but don't trigger recording
+                self._buffer.append((sample, False, is_currently_speaking))  # Mark as non-voice to prevent false activation
                 return
 
             if not self.interruptible and self.currently_speaking_event.is_set():
                 logger.debug(f"Detected voice activity but interruptibility is disabled: {self.interruptible=}, {self.currently_speaking_event.is_set()=}")
+                # CRITICAL: Still add to buffer to maintain continuity
+                self._buffer.append((sample, False, is_currently_speaking))  # Mark as non-voice to prevent false activation
                 return
+
+            # VAD confidence is True and we're past grace period → activate recording
+            # CRITICAL: Add current sample to buffer BEFORE copying, so it's included in recording
+            self._buffer.append((sample, vad_confidence, is_currently_speaking))
 
             self.audio_io.stop_speaking()
             self.processing_active_event.clear()
-            #self._samples = list(self._buffer)  # Clean conversion
 
+            # Copy buffer contents to recording lists
             self._samples = [chunk for chunk, _, _ in self._buffer]
             self._vad_flags = [flag for _, flag, _ in self._buffer]
             self._speaking_flags = [speaking for _, _, speaking in self._buffer]
 
             self._recording_started = True
+        else:
+            # No voice activity detected → just add to buffer and continue
+            self._buffer.append((sample, vad_confidence, is_currently_speaking))
 
     def _process_activated_audio(self, sample: NDArray[np.float32], vad_confidence: bool) -> None:
         """
@@ -347,15 +353,42 @@ class SpeechListener:
 
         # Require a sufficient proportion of frames with positive VAD confidence.
         # This helps suppress persistent false activations triggered by echo or noise.
+        #
+        # CRITICAL: We must ONLY count frames in the active speech region, excluding:
+        # 1. Pre-roll buffer (first ~25 frames from _buffer, mostly False)
+        # 2. Trailing silence (last ~20 frames waiting for PAUSE_LIMIT, all False)
+        #
+        # Calculate the active speech region: from first True VAD to last True VAD
         total_frames = len(self._vad_flags)
-        voiced_frames = sum(1 for flag in self._vad_flags if flag)
-        voice_ratio = (voiced_frames / total_frames) if total_frames else 0.0
+
+        # Find the range of actual speech activity
+        first_voiced_idx = next((i for i, flag in enumerate(self._vad_flags) if flag), None)
+        last_voiced_idx = next((i for i, flag in enumerate(reversed(self._vad_flags)) if flag), None)
+
+        if first_voiced_idx is None or last_voiced_idx is None:
+            # No voice activity detected at all
+            logger.warning(
+                "🚫 Ignoring detected audio: no voice activity detected in {} frames",
+                total_frames
+            )
+            self.reset()
+            return
+
+        # Convert last_voiced_idx from reversed index to forward index
+        last_voiced_idx = total_frames - 1 - last_voiced_idx
+
+        # Extract active region (from first voiced to last voiced, inclusive)
+        active_vad_flags = self._vad_flags[first_voiced_idx:last_voiced_idx + 1]
+        active_frames = len(active_vad_flags)
+        voiced_frames = sum(1 for flag in active_vad_flags if flag)
+        voice_ratio = (voiced_frames / active_frames) if active_frames else 0.0
+
         logger.debug(
-            "Voice activity stats | total_frames={} | voiced_frames={} | ratio={:.2f}",
-            total_frames,
-            voiced_frames,
-            voice_ratio,
+            f"Voice activity stats | total_frames={total_frames} | "
+            f"active_region=[{first_voiced_idx}:{last_voiced_idx+1}] ({active_frames} frames) | "
+            f"voiced_frames={voiced_frames} | ratio={voice_ratio:.2%}"
         )
+
         if voice_ratio < self.MIN_VOICE_ACTIVITY_RATIO:
             logger.warning(
                 "🚫 Ignoring detected audio: voice activity ratio too low ({:.0f}% < {:.0f}%). "
@@ -368,9 +401,13 @@ class SpeechListener:
 
         # Discard segments where all voiced frames were captured while the assistant itself was speaking.
         # These are typically acoustic echoes that slipped through the interrupt logic.
+        # Also limit this check to the active speech region only.
+        active_vad_flags_in_region = self._vad_flags[first_voiced_idx:last_voiced_idx + 1]
+        active_speaking_flags_in_region = self._speaking_flags[first_voiced_idx:last_voiced_idx + 1]
+
         voiced_frames_during_speech = sum(
-            1 for vad_flag, speaking_flag in zip(self._vad_flags, self._speaking_flags) if
-            vad_flag and speaking_flag
+            1 for vad_flag, speaking_flag in zip(active_vad_flags_in_region, active_speaking_flags_in_region)
+            if vad_flag and speaking_flag
         )
         user_voiced_frames = voiced_frames - voiced_frames_during_speech
 
