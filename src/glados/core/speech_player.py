@@ -92,7 +92,7 @@ class SpeechPlayer:
                     else:  # Playback completed normally
                         logger.success(f"AudioPlayer: Playback completed for: '{audio_msg.text}'")
                         assistant_text_accumulator.append(audio_msg.text)
-                        
+
                     self.currently_speaking_event.clear()
     
                 else:
