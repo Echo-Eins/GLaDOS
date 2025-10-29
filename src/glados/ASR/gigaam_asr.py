@@ -57,7 +57,15 @@ class AudioTranscriber:
         resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = resolved_device
 
+        use_fp16 = fp16_encoder
+        if resolved_device == "cpu" and fp16_encoder:
+            logger.debug(
+                "Disabling fp16 encoder precision for CPU inference to avoid numerical issues."
+            )
+            use_fp16 = False
+
         logger.info(f"GigaAM inference backend: {self.device.upper()}")
+        logger.info(f"GigaAM encoder precision: {'fp16' if use_fp16 else 'fp32'}")
 
         self._asr_model = gigaam.load_model("rnnt", fp16_encoder=fp16_encoder, device=resolved_device)
         self._emotion_model = gigaam.load_model("emo", fp16_encoder=fp16_encoder, device=resolved_device)
