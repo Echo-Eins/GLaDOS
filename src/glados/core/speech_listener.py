@@ -396,13 +396,25 @@ class SpeechListener:
 
         # Extract active region (from first voiced to last voiced, inclusive)
         active_vad_flags = self._vad_flags[first_voiced_idx:last_voiced_idx + 1]
-        active_frames = len(active_vad_flags)
-        voiced_frames = sum(1 for flag in active_vad_flags if flag)
-        voice_ratio = (voiced_frames / active_frames) if active_frames else 0.0
+        active_speaking_flags = self._speaking_flags[first_voiced_idx:last_voiced_idx + 1]
+
+        # Filter out frames that happened while the assistant was actively speaking.
+        # Those frames are usually echo from our own TTS output and should not be
+        # counted towards the user's speech statistics.
+        user_frame_mask = [not speaking for speaking in active_speaking_flags]
+        user_active_frames = sum(user_frame_mask)
+        voiced_frames = sum(
+            1 for flag, keep in zip(active_vad_flags, user_frame_mask) if keep and flag
+        )
+
+        # Fall back to the raw active-frame count when all frames happened while the
+        # assistant was speaking (e.g. immediate wake word after TTS interruption).
+        effective_denominator = user_active_frames or len(active_vad_flags)
+        voice_ratio = (voiced_frames / effective_denominator) if effective_denominator else 0.0
 
         logger.debug(
             f"Voice activity stats | total_frames={total_frames} | "
-            f"active_region=[{first_voiced_idx}:{last_voiced_idx+1}] ({active_frames} frames) | "
+            f"active_region=[{first_voiced_idx}:{last_voiced_idx+1}] ({len(active_vad_flags)} frames) | "
             f"voiced_frames={voiced_frames} | ratio={voice_ratio:.2%}"
         )
 
@@ -419,8 +431,8 @@ class SpeechListener:
         # Discard segments where all voiced frames were captured while the assistant itself was speaking.
         # These are typically acoustic echoes that slipped through the interrupt logic.
         # Also limit this check to the active speech region only.
-        active_vad_flags_in_region = self._vad_flags[first_voiced_idx:last_voiced_idx + 1]
-        active_speaking_flags_in_region = self._speaking_flags[first_voiced_idx:last_voiced_idx + 1]
+        active_vad_flags_in_region = active_vad_flags
+        active_speaking_flags_in_region = active_speaking_flags
 
         voiced_frames_during_speech = sum(
             1 for vad_flag, speaking_flag in zip(active_vad_flags_in_region, active_speaking_flags_in_region)
@@ -436,7 +448,10 @@ class SpeechListener:
             self.reset()
             return
 
-        recognition = self.asr(self._samples)
+        # Only feed the active speech portion to the ASR to avoid long silences
+        # or assistant echo contaminating the recognition request.
+        active_samples = self._samples[first_voiced_idx:last_voiced_idx + 1]
+        recognition = self.asr(active_samples)
 
         if recognition.text:
             logger.success(f"ASR text: '{recognition.text}'")

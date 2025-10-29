@@ -21,6 +21,8 @@ class SoundDeviceAudioIO:
     SAMPLE_RATE: int = 16000  # Sample rate for input stream
     VAD_SIZE: int = 32  # Milliseconds of sample for Voice Activity Detection (VAD)
     VAD_THRESHOLD: float = 0.8  # Threshold for VAD detection
+    MAX_QUEUE_CHUNKS: int = 256  # Safety cap for pending chunks (~8.2s at 32 ms frames)
+    SILENCE_RESET_THRESHOLD: int = 50  # Consecutive silent frames before forcing VAD reset (~1.6s)
 
     def __init__(self, vad_threshold: float | None = None) -> None:
         """Initialize the sounddevice audio I/O.
@@ -48,6 +50,7 @@ class SoundDeviceAudioIO:
         self._is_playing = False
         self._playback_thread = None
         self._stop_event = threading.Event()
+        self._consecutive_silence = 0
 
     def start_listening(self) -> None:
         """Start capturing audio from the system microphone.
@@ -92,8 +95,38 @@ class SoundDeviceAudioIO:
             with self._vad_lock:
                 vad_value = self._vad_model(np.expand_dims(data, 0))
 
+                if bool(vad_value > self.vad_threshold):
+                    # Reset the silence counter whenever we get positive speech activity
+                    self._consecutive_silence = 0
+                else:
+                    self._consecutive_silence += 1
+                    if self._consecutive_silence >= self.SILENCE_RESET_THRESHOLD:
+                        logger.debug(
+                            "VAD observed {} consecutive silent frames, resetting Silero state",
+                            self._consecutive_silence,
+                        )
+                        self._vad_model.reset_states()
+                        self._consecutive_silence = 0
+
             vad_confidence = vad_value > self.vad_threshold
             self._sample_queue.put((data, bool(vad_confidence)))
+
+            # Prevent unbounded growth if the consumer thread is momentarily busy.
+            # Drop the oldest frames while we are above the safety limit so that
+            # new user speech does not need to wade through minutes of stale noise.
+            dropped = False
+            while self._sample_queue.qsize() > self.MAX_QUEUE_CHUNKS:
+                try:
+                    self._sample_queue.get_nowait()
+                    dropped = True
+                except queue.Empty:
+                    break
+            if dropped:
+                logger.debug(
+                    "Sample queue exceeded {} chunks; dropped oldest buffered audio to stay real-time",
+                    self.MAX_QUEUE_CHUNKS,
+                )
+
 
         try:
             self.input_stream = sd.InputStream(
@@ -252,3 +285,4 @@ class SoundDeviceAudioIO:
         logger.debug("Resetting VAD model state...")
         with self._vad_lock:
             self._vad_model.reset_states()
+            self._consecutive_silence = 0
