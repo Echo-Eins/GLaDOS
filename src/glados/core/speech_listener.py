@@ -9,6 +9,7 @@ from collections import deque
 import math
 import queue
 import threading
+import time
 
 from Levenshtein import distance
 from loguru import logger
@@ -64,6 +65,7 @@ class SpeechListener:
     BUFFER_SIZE: int = 800  # Milliseconds of buffer BEFORE VAD detection
     PAUSE_LIMIT: int = 640  # Milliseconds of pause allowed before processing
     SIMILARITY_THRESHOLD: int = 2  # Threshold for wake word similarity
+    ECHO_GRACE_PERIOD: float = 0.8  # Seconds to ignore VAD after speaking ends (acoustic echo suppression)
 
     def __init__(
         self,
@@ -105,6 +107,10 @@ class SpeechListener:
         self._recording_started = False
         self._samples: list[NDArray[np.float32]] = []
         self._gap_counter = 0
+
+        # Echo suppression: track when assistant stopped speaking
+        self._last_speaking_end_time: float = 0.0
+        self._was_speaking: bool = False
 
         self.shutdown_event = shutdown_event
         self.currently_speaking_event = currently_speaking_event
@@ -183,7 +189,21 @@ class SpeechListener:
         """
         self._buffer.append(sample)  # Automatically handles overflow
 
+        # Track speaking state transitions to detect when echo grace period should start
+        is_currently_speaking = self.currently_speaking_event.is_set()
+        if self._was_speaking and not is_currently_speaking:
+            # Transition from speaking to not speaking - start grace period
+            self._last_speaking_end_time = time.time()
+            logger.debug(f"Assistant stopped speaking, starting {self.ECHO_GRACE_PERIOD}s echo grace period")
+        self._was_speaking = is_currently_speaking
+
         if vad_confidence:
+            # Check if we're within grace period after assistant stopped speaking
+            time_since_speaking_ended = time.time() - self._last_speaking_end_time
+            if time_since_speaking_ended < self.ECHO_GRACE_PERIOD:
+                logger.debug(f"VAD detected but within echo grace period ({time_since_speaking_ended:.2f}s < {self.ECHO_GRACE_PERIOD}s), ignoring")
+                return
+
             if not self.interruptible and self.currently_speaking_event.is_set():
                 logger.debug(f"Detected voice activity but interruptibility is disabled: {self.interruptible=}, {self.currently_speaking_event.is_set()=}")
                 return
