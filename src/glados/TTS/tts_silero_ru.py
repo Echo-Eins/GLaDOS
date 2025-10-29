@@ -204,13 +204,42 @@ class SileroRuSynthesizer:
                 prefer_attr,
             )
 
-        for param in model.parameters(recurse=True):
-            param.data = param.data.to(dtype=dtype, device=param.device)
-            if param.grad is not None:
-                param.grad.data = param.grad.data.to(dtype=dtype, device=param.grad.device)
+        # Check if the model has parameters() and buffers() methods
+        # Silero models may not expose these directly
+        if not (hasattr(model, 'parameters') and callable(getattr(model, 'parameters'))):
+            logger.debug(
+                "Model does not expose parameters() method. "
+                "Precision conversion via %s() may have succeeded, or model uses custom structure.",
+                prefer_attr,
+            )
+            return model
 
-        for buffer in model.buffers(recurse=True):
-            buffer.data = buffer.data.to(dtype=dtype, device=buffer.device)
+        if not (hasattr(model, 'buffers') and callable(getattr(model, 'buffers'))):
+            logger.debug(
+                "Model does not expose buffers() method. "
+                "Skipping buffer conversion."
+            )
+            # Still try to convert parameters
+            try:
+                for param in model.parameters(recurse=True):
+                    param.data = param.data.to(dtype=dtype, device=param.device)
+                    if param.grad is not None:
+                        param.grad.data = param.grad.data.to(dtype=dtype, device=param.grad.device)
+            except Exception as e:
+                logger.debug(f"Could not convert parameters: {e}")
+            return model
+
+        # Standard PyTorch module - convert parameters and buffers
+        try:
+            for param in model.parameters(recurse=True):
+                param.data = param.data.to(dtype=dtype, device=param.device)
+                if param.grad is not None:
+                    param.grad.data = param.grad.data.to(dtype=dtype, device=param.grad.device)
+
+            for buffer in model.buffers(recurse=True):
+                buffer.data = buffer.data.to(dtype=dtype, device=buffer.device)
+        except Exception as e:
+            logger.debug(f"Could not convert model precision manually: {e}")
 
         return model
 
