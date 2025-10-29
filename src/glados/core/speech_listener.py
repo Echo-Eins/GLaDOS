@@ -321,6 +321,14 @@ class SpeechListener:
             else:
                 self.llm_queue.put(recognition)
                 self.processing_active_event.set()
+        else:
+            # ANOMALY: High RMS but empty ASR result - real speech may have been lost!
+            if rms_energy >= 0.01:
+                logger.error(
+                    f"⚠️ ANOMALY DETECTED: RMS energy was high ({rms_energy:.6f} >= 0.01) "
+                    f"but ASR returned empty text! Real speech may have been lost. "
+                    f"Please speak again."
+                )
 
         self.reset()
 
