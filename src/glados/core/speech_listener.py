@@ -104,7 +104,7 @@ class SpeechListener:
         #self._buffer: deque[NDArray[np.float32]] = deque(maxlen=self.BUFFER_SIZE // self.VAD_SIZE)
 
         # Circular buffer to hold pre-activation samples alongside their VAD decisions
-        self._buffer: deque[tuple[NDArray[np.float32], bool]] = deque(
+        self._buffer: deque[tuple[NDArray[np.float32], bool, bool]] = deque(
             maxlen=self.BUFFER_SIZE // self.VAD_SIZE
         )
 
@@ -114,6 +114,7 @@ class SpeechListener:
         self._recording_started = False
         self._samples: list[NDArray[np.float32]] = []
         self._vad_flags: list[bool] = []
+        self._speaking_flags: list[bool] = []
         self._gap_counter = 0
 
         # Echo suppression: track when assistant stopped speaking
@@ -197,10 +198,11 @@ class SpeechListener:
         """
         #self._buffer.append(sample)  # Automatically handles overflow
 
-        self._buffer.append((sample, vad_confidence))  # Automatically handles overflow
+        is_currently_speaking = self.currently_speaking_event.is_set()
+        self._buffer.append((sample, vad_confidence, is_currently_speaking))  # Automatically handles overflow
 
         # Track speaking state transitions to detect when echo grace period should start
-        is_currently_speaking = self.currently_speaking_event.is_set()
+        #is_currently_speaking = self.currently_speaking_event.is_set()
         if self._was_speaking and not is_currently_speaking:
             # Transition from speaking to not speaking - start grace period
             self._last_speaking_end_time = time.time()
@@ -222,8 +224,9 @@ class SpeechListener:
             self.processing_active_event.clear()
             #self._samples = list(self._buffer)  # Clean conversion
 
-            self._samples = [chunk for chunk, _ in self._buffer]
-            self._vad_flags = [flag for _, flag in self._buffer]
+            self._samples = [chunk for chunk, _, _ in self._buffer]
+            self._vad_flags = [flag for _, flag, _ in self._buffer]
+            self._speaking_flags = [speaking for _, _, speaking in self._buffer]
 
             self._recording_started = True
 
@@ -243,6 +246,7 @@ class SpeechListener:
         self._samples.append(sample)
 
         self._vad_flags.append(vad_confidence)
+        self._speaking_flags.append(self.currently_speaking_event.is_set())
 
         if not vad_confidence:
             self._gap_counter += 1
@@ -291,6 +295,7 @@ class SpeechListener:
         self._samples.clear()
 
         self._vad_flags.clear()
+        self._speaking_flags.clear()
 
         self._gap_counter = 0
         self._buffer.clear()
@@ -340,26 +345,42 @@ class SpeechListener:
             self.reset()
             return
 
-            # Require a sufficient proportion of frames with positive VAD confidence.
-            # This helps suppress persistent false activations triggered by echo or noise.
-            total_frames = len(self._vad_flags)
-            voiced_frames = sum(1 for flag in self._vad_flags if flag)
-            voice_ratio = (voiced_frames / total_frames) if total_frames else 0.0
-            logger.debug(
-                "Voice activity stats | total_frames={} | voiced_frames={} | ratio={:.2f}",
-                total_frames,
-                voiced_frames,
-                voice_ratio,
+        # Require a sufficient proportion of frames with positive VAD confidence.
+        # This helps suppress persistent false activations triggered by echo or noise.
+        total_frames = len(self._vad_flags)
+        voiced_frames = sum(1 for flag in self._vad_flags if flag)
+        voice_ratio = (voiced_frames / total_frames) if total_frames else 0.0
+        logger.debug(
+            "Voice activity stats | total_frames={} | voiced_frames={} | ratio={:.2f}",
+            total_frames,
+            voiced_frames,
+            voice_ratio,
+        )
+        if voice_ratio < self.MIN_VOICE_ACTIVITY_RATIO:
+            logger.warning(
+                "🚫 Ignoring detected audio: voice activity ratio too low ({:.0f}% < {:.0f}%). "
+                "Likely echo or background noise.",
+                voice_ratio * 100,
+                self.MIN_VOICE_ACTIVITY_RATIO * 100,
             )
-            if voice_ratio < self.MIN_VOICE_ACTIVITY_RATIO:
-                logger.warning(
-                    "🚫 Ignoring detected audio: voice activity ratio too low ({:.0f}% < {:.0f}%). "
-                    "Likely echo or background noise.",
-                    voice_ratio * 100,
-                    self.MIN_VOICE_ACTIVITY_RATIO * 100,
-                )
-                self.reset()
-                return
+            self.reset()
+            return
+
+        # Discard segments where all voiced frames were captured while the assistant itself was speaking.
+        # These are typically acoustic echoes that slipped through the interrupt logic.
+        voiced_frames_during_speech = sum(
+            1 for vad_flag, speaking_flag in zip(self._vad_flags, self._speaking_flags) if
+            vad_flag and speaking_flag
+        )
+        user_voiced_frames = voiced_frames - voiced_frames_during_speech
+
+        if voiced_frames and user_voiced_frames <= 0:
+            logger.warning(
+                "🚫 Ignoring detected audio: all voice activity occurred while assistant speech was active. "
+                "Most likely acoustic echo."
+            )
+            self.reset()
+            return
 
         recognition = self.asr(self._samples)
 
