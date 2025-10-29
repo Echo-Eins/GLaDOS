@@ -189,12 +189,11 @@ class Glados:
         self._stc = stc.SpokenTextConverter()
 
         # warm up onnx ASR model, this is needed to avoid long pauses on first request
+        logger.info("Warming up ASR model...")
         self._asr_model.transcribe_file(resource_path("data/0.wav"))
+        logger.success("ASR model warmed up successfully")
 
-        # warm up LLM model to pre-load it into Ollama memory
-        self._warmup_llm()
-
-        # Initialize events for thread synchronization
+        # Initialize events for thread synchronization (BEFORE warmup to avoid blocking audio)
         self.processing_active_event = threading.Event()  # Indicates if input processing is active (ASR + LLM + TTS)
         self.currently_speaking_event = threading.Event()  # Indicates if the assistant is currently speaking
         self.shutdown_event = threading.Event()  # Event to signal shutdown of all threads
@@ -268,6 +267,32 @@ class Glados:
             self.component_threads.append(thread)
             thread.start()
             logger.info(f"Orchestrator: {name} thread started.")
+
+        # warm up LLM model to pre-load it into Ollama memory in background thread
+        # IMPORTANT: Do this AFTER all threads are started so audio system is operational
+        # This allows user to interact with GLaDOS while warmup happens in background
+        self._start_llm_warmup_thread()
+
+    def _start_llm_warmup_thread(self) -> None:
+        """
+        Start LLM warmup in a background thread so it doesn't block initialization.
+
+        This allows the audio system and all other components to become operational immediately,
+        while the LLM model loads in the background. The first user request may still experience
+        a delay if warmup hasn't completed yet, but the system remains responsive.
+        """
+        def warmup_wrapper():
+            logger.info("LLM Warmup: Starting background warmup (this may take 1-2 minutes)...")
+            logger.info("LLM Warmup: Audio system is operational - you can start speaking!")
+            self._warmup_llm()
+
+        warmup_thread = threading.Thread(
+            target=warmup_wrapper,
+            name="LLMWarmup",
+            daemon=True  # Don't block shutdown
+        )
+        warmup_thread.start()
+        # Don't join - let it run in background
 
     def _warmup_llm(self) -> None:
         """

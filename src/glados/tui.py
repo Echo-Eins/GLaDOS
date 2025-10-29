@@ -286,6 +286,24 @@ class GladosUI(App[None]):
     glados_worker: object | None = None
     instantiation_worker: Worker[None] | None = None
 
+    def __init__(
+        self,
+        config_path: str | Path = "configs/glados_config.yaml",
+        language: str | None = None,
+        **kwargs,
+    ) -> None:
+        """
+        Initialize the GladosUI application.
+
+        Parameters:
+            config_path: Path to the Glados configuration YAML file
+            language: Optional language override ('en' or 'ru')
+            **kwargs: Additional arguments passed to App.__init__
+        """
+        super().__init__(**kwargs)
+        self.config_path = Path(config_path)
+        self.language = language
+
     def compose(self) -> ComposeResult:
         """
         Compose the user interface layout for the GladosUI application.
@@ -434,11 +452,17 @@ class GladosUI(App[None]):
             Glados: An instance of the GLaDOS engine.
         """
 
-        config_path = Path("configs/glados_config.yaml")
-        if not config_path.exists():
-            logger.error(f"GLaDOS config file not found: {config_path}")
+        if not self.config_path.exists():
+            logger.error(f"GLaDOS config file not found: {self.config_path}")
+            return
 
-        glados_config = GladosConfig.from_yaml(str(config_path))
+        glados_config = GladosConfig.from_yaml(str(self.config_path))
+
+        # Apply language override if provided
+        if self.language:
+            glados_config = glados_config.model_copy(update={"language": self.language.lower()})
+            logger.info(f"Overriding ASR language to: {self.language}")
+
         self.glados_engine_instance = Glados.from_config(glados_config)
 
     def start_instantiation(self) -> None:
