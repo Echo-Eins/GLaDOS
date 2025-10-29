@@ -281,14 +281,26 @@ class SpeechListener:
         Processes the accumulated audio samples once a speech pause is detected.
 
         This method performs the following steps:
-        1. Transcribes the collected audio samples using the ASR model.
-        2. If transcription is successful:
+        1. Checks if accumulated samples contain actual speech (not just noise/silence)
+        2. Transcribes the collected audio samples using the ASR model.
+        3. If transcription is successful:
             a. Checks for the `wake_word` (if configured).
             b. If the wake word is detected (or not required), the transcribed text is
                placed into the `llm_queue`, and `processing_active_event` is set.
-        3. Resets the listener's internal state using `self.reset()`, preparing for the next input.
+        4. Resets the listener's internal state using `self.reset()`, preparing for the next input.
         """
         logger.debug("Detected pause after speech. Processing...")
+
+        # Check if samples contain actual speech energy (not just silence/noise)
+        if self._samples:
+            audio = np.concatenate(self._samples)
+            rms_energy = np.sqrt(np.mean(audio**2))
+
+            # Threshold: if RMS is too low, this is likely a false VAD trigger
+            if rms_energy < 0.01:  # Adjust threshold based on your microphone
+                logger.debug(f"Ignoring detected audio: RMS energy too low ({rms_energy:.4f} < 0.01), likely false VAD trigger")
+                self.reset()
+                return
 
         recognition = self.asr(self._samples)
 
