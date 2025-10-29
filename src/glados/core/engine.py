@@ -152,6 +152,9 @@ class Glados:
         llm_model: str,
         api_key: str | None = None,
         keep_alive_timeout: str = "30m",
+        enable_thinking: bool = False,
+        thinking_trigger_words: list[str] | None = None,
+        thinking_fuzzy_threshold: float = 0.75,
         interruptible: bool = True,
         wake_word: str | None = None,
         announcement: str | None = None,
@@ -173,6 +176,9 @@ class Glados:
             llm_model (str): The name of the LLM model to use.
             api_key (str | None): API key for accessing the LLM service, if required.
             keep_alive_timeout (str): How long to keep LLM loaded in Ollama (e.g., "5m", "30m", "1h").
+            enable_thinking (bool): Enable thinking mode by default for all requests.
+            thinking_trigger_words (list[str] | None): Keywords that activate thinking mode via fuzzy matching.
+            thinking_fuzzy_threshold (float): Fuzzy matching threshold (0.0-1.0) for trigger words.
             interruptible (bool): Whether the assistant can be interrupted while speaking.
             wake_word (str | None): Optional wake word to trigger the assistant.
             announcement (str | None): Optional announcement to play on startup.
@@ -184,6 +190,9 @@ class Glados:
         self.llm_model = llm_model
         self.api_key = api_key
         self.keep_alive_timeout = keep_alive_timeout
+        self.enable_thinking = enable_thinking
+        self.thinking_trigger_words = thinking_trigger_words or []
+        self.thinking_fuzzy_threshold = thinking_fuzzy_threshold
         self.interruptible = interruptible
         self.wake_word = wake_word
         self.announcement = announcement
@@ -462,6 +471,9 @@ class Glados:
             llm_model=config.llm_model,
             api_key=config.api_key,
             keep_alive_timeout=config.keep_alive_timeout,
+            enable_thinking=config.enable_thinking,
+            thinking_trigger_words=config.thinking_trigger_words,
+            thinking_fuzzy_threshold=config.thinking_fuzzy_threshold,
             interruptible=config.interruptible,
             wake_word=config.wake_word,
             announcement=config.announcement,
