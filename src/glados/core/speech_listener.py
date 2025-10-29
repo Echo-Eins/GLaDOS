@@ -296,6 +296,7 @@ class SpeechListener:
         - Resetting the `_gap_counter`.
         - Emptying the pre-activation circular buffer (`_buffer.queue`), safely using its internal mutex.
         - Resetting VAD model state to prevent accumulated noise from affecting future detections.
+        - CRITICAL: Clearing the sample queue to remove accumulated echo/noise from playback period.
         """
         logger.debug("Resetting recorder...")
         self._recording_started = False
@@ -306,6 +307,17 @@ class SpeechListener:
 
         self._gap_counter = 0
         self._buffer.clear()
+
+        # CRITICAL: Clear the sample queue to remove samples accumulated during playback
+        # During long GLaDOS responses, microphone continues capturing and queue fills with echo
+        queue_size = self._sample_queue.qsize()
+        if queue_size > 0:
+            logger.debug(f"Clearing {queue_size} accumulated samples from queue (likely echo/noise during playback)")
+            while not self._sample_queue.empty():
+                try:
+                    self._sample_queue.get_nowait()
+                except queue.Empty:
+                    break
 
         # CRITICAL: Reset VAD model state to clear accumulated context and internal state
         # This prevents noise/echo from previous segments from affecting future VAD decisions
