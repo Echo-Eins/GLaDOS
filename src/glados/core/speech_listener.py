@@ -292,15 +292,22 @@ class SpeechListener:
         logger.debug("Detected pause after speech. Processing...")
 
         # Check if samples contain actual speech energy (not just silence/noise)
-        if self._samples:
-            audio = np.concatenate(self._samples)
-            rms_energy = np.sqrt(np.mean(audio**2))
+        if not self._samples:
+            logger.warning("No samples collected, skipping ASR")
+            self.reset()
+            return
 
-            # Threshold: if RMS is too low, this is likely a false VAD trigger
-            if rms_energy < 0.01:  # Adjust threshold based on your microphone
-                logger.debug(f"Ignoring detected audio: RMS energy too low ({rms_energy:.4f} < 0.01), likely false VAD trigger")
-                self.reset()
-                return
+        audio = np.concatenate(self._samples)
+        rms_energy = np.sqrt(np.mean(audio**2))
+
+        # Always log RMS for debugging
+        logger.info(f"RMS energy: {rms_energy:.6f} | Samples: {len(self._samples)} | Total duration: {len(audio)/16000:.2f}s")
+
+        # Threshold: if RMS is too low, this is likely a false VAD trigger
+        if rms_energy < 0.01:  # Adjust threshold based on your microphone
+            logger.warning(f"🚫 Ignoring detected audio: RMS energy too low ({rms_energy:.6f} < 0.01), likely false VAD trigger")
+            self.reset()
+            return
 
         recognition = self.asr(self._samples)
 
@@ -314,6 +321,14 @@ class SpeechListener:
             else:
                 self.llm_queue.put(recognition)
                 self.processing_active_event.set()
+        else:
+            # ANOMALY: High RMS but empty ASR result - real speech may have been lost!
+            if rms_energy >= 0.01:
+                logger.error(
+                    f"⚠️ ANOMALY DETECTED: RMS energy was high ({rms_energy:.6f} >= 0.01) "
+                    f"but ASR returned empty text! Real speech may have been lost. "
+                    f"Please speak again."
+                )
 
         self.reset()
 
@@ -347,14 +362,19 @@ class SpeechListener:
         audio = audio / max_abs_val
 
         emotions = None
-        detected_text = ""
 
         if hasattr(self.asr_model, "transcribe_with_emotions"):
-            text, emotions = getattr(self.asr_model, "transcribe_with_emotions")(audio)
-            detected_text = text
+            detected_text, emotions = getattr(self.asr_model, "transcribe_with_emotions")(audio)
             # Sanitize emotions to remove NaN/inf values that would break JSON serialization
             emotions = sanitize_emotions(emotions)
         else:
             detected_text = self.asr_model.transcribe(audio)
+
+        # Strip whitespace and check if result is empty
+        detected_text = (detected_text or "").strip()
+
+        if not detected_text:
+            logger.warning("ASR produced empty or whitespace-only transcription")
+            return RecognitionResult(text="", emotions=emotions)
 
         return RecognitionResult(text=detected_text, emotions=emotions)
