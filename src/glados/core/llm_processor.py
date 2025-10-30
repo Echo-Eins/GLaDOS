@@ -297,11 +297,12 @@ class LanguageModelProcessor:
                 if self.thinking_trigger_words:  # Only add if trigger words are configured
                     data["extra_body"] = {
                         "chat_template_kwargs": {
-                            "enable_thinking": enable_thinking_for_request
+                            "enable_thinking": enable_thinking_for_request,
+                            "output_thinking": False  # CRITICAL: Disable thinking blocks in output
                         }
                     }
                     if enable_thinking_for_request:
-                        logger.info("Thinking mode enabled for this request")
+                        logger.info("Thinking mode enabled for this request (thinking blocks hidden from output)")
                     else:
                         logger.debug("Thinking mode disabled for this request")
 
