@@ -213,6 +213,7 @@ class Glados:
         self.processing_active_event = threading.Event()  # Indicates if input processing is active (ASR + LLM + TTS)
         self.currently_speaking_event = threading.Event()  # Indicates if the assistant is currently speaking
         self.shutdown_event = threading.Event()  # Event to signal shutdown of all threads
+        self.pipeline_status_queue: queue.Queue[tuple[str, bool]] = queue.Queue(maxsize=32)
 
         # Initialize queues for inter-thread communication
         self.llm_queue: queue.Queue[RecognitionResult] = queue.Queue()
@@ -252,6 +253,7 @@ class Glados:
             enable_thinking=self.enable_thinking,
             thinking_trigger_words=self.thinking_trigger_words,
             thinking_fuzzy_threshold=self.thinking_fuzzy_threshold,
+            status_queue=self.pipeline_status_queue,
         )
 
         self.tts_synthesizer = TextToSpeechSynthesizer(

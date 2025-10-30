@@ -75,6 +75,7 @@ class LanguageModelProcessor:
         enable_thinking: bool = False,  # Enable thinking mode by default
         thinking_trigger_words: list[str] | None = None,  # Keywords that activate thinking mode
         thinking_fuzzy_threshold: float = 0.75,  # Fuzzy matching threshold
+        status_queue: queue.Queue[tuple[str, bool]] | None = None,
     ) -> None:
         self.llm_input_queue = llm_input_queue
         self.tts_input_queue = tts_input_queue
@@ -89,6 +90,7 @@ class LanguageModelProcessor:
         self.enable_thinking = enable_thinking
         self.thinking_trigger_words = thinking_trigger_words or []
         self.thinking_fuzzy_threshold = thinking_fuzzy_threshold
+        self.status_queue = status_queue
 
         self.prompt_headers = {"Content-Type": "application/json"}
         if api_key:
@@ -102,6 +104,22 @@ class LanguageModelProcessor:
 
         # Chat logger (will be set by engine after initialization)
         self.chat_logger = None
+
+    def _notify_status(self, state: str, active: bool) -> None:
+        if self.status_queue is None:
+            return
+        try:
+            self.status_queue.put_nowait((state, active))
+        except queue.Full:
+            try:
+                # Drop the oldest message to make room for the latest state
+                self.status_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.status_queue.put_nowait((state, active))
+            except queue.Full:
+                pass
 
     def _should_enable_thinking(self, user_text: str) -> bool:
         """
@@ -262,6 +280,8 @@ class LanguageModelProcessor:
 
                 logger.info(f"LLM Processor: Received text for LLM: '{detected_text}'")
 
+                think_notified = False
+
                 # Format user message with emotions if available and valid
                 user_content = detected_text
                 if emotions:
@@ -316,6 +336,8 @@ class LanguageModelProcessor:
                 assistant_response_chunks: list[str] = []
 
                 try:
+                    self._notify_status("think", True)
+                    think_notified = True
                     with requests.post(
                         str(self.completion_url),
                         headers=self.prompt_headers,
@@ -464,6 +486,8 @@ class LanguageModelProcessor:
                         # If an EOS was already sent by TTS from a *previous* partial sentence,
                         # this could lead to an early clear of currently_speaking.
                         # The `processing_active_event` is key to synchronize.
+                    if think_notified:
+                        self._notify_status("think", False)
 
             except queue.Empty:
                 pass  # Normal

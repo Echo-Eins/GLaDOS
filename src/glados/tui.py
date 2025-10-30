@@ -5,6 +5,7 @@ import sys
 from typing import ClassVar, cast
 import yaml
 import queue
+import itertools
 from collections import deque
 from loguru import logger
 from rich.text import Text
@@ -248,9 +249,10 @@ class GPULoadWidget(Static):
         if self._label is None or self._progress is None:
             return
         self._label.update("GPU Load: N/A")
-        self._label.styles.color = "grey62"
+        # Textual doesn't recognise colour names like "grey62", so use hex codes
+        self._label.styles.color = "#9e9e9e"
         self._progress.update(progress=0)
-        self._progress.bar_style = "grey30"
+        self._progress.bar_style = "#4d4d4d"
 
     def _set_gpu_load(self, load: float) -> None:
         if self._label is None or self._progress is None:
@@ -269,6 +271,152 @@ class GPULoadWidget(Static):
         if load < 75:
             return "#ffb000"
         return "#ff4f4f"
+
+class PipelineStatusWidget(Static):
+    """Display the high-level state of the voice pipeline."""
+
+    DEFAULT_CSS = """
+    PipelineStatusWidget {
+        layout: vertical;
+        padding: 1 1;
+        border: solid $primary 60%;
+        background: $background 85%;
+        color: $foreground 80%;
+        gap: 1;
+    }
+
+    PipelineStatusWidget > .status-title {
+        text-style: bold;
+        color: $primary;
+    }
+    """
+
+    SPINNER_FRAMES: ClassVar[tuple[str, ...]] = (
+        "⠋",
+        "⠙",
+        "⠹",
+        "⠸",
+        "⠼",
+        "⠴",
+        "⠦",
+        "⠧",
+        "⠇",
+        "⠏",
+    )
+
+    def __init__(
+        self,
+        glados: Glados | None = None,
+        *,
+        update_interval: float = 0.2,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._glados = glados
+        self._status_queue: queue.Queue[tuple[str, bool]] | None = None
+        self._update_interval = update_interval
+        self._spinner_cycle = itertools.cycle(self.SPINNER_FRAMES)
+        self._current_frame = next(self._spinner_cycle)
+        self._listen_active = True
+        self._think_active = False
+        self._speak_active = False
+        self._last_render: tuple[bool, bool, bool] | None = None
+        self._listen_label: Label | None = None
+        self._think_label: Label | None = None
+        self._speak_label: Label | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Label("PIPELINE", classes="status-title")
+        self._listen_label = Label()
+        self._think_label = Label()
+        self._speak_label = Label()
+        yield self._listen_label
+        yield self._think_label
+        yield self._speak_label
+
+    def on_mount(self) -> None:
+        self.set_interval(self._update_interval, self._refresh)
+        self._render_state(force=True)
+
+    def set_glados(self, glados: Glados | None) -> None:
+        """Bind the widget to a Glados engine instance."""
+
+        self._glados = glados
+        if glados is not None:
+            status_queue = getattr(glados, "pipeline_status_queue", None)
+            if isinstance(status_queue, queue.Queue):
+                self._status_queue = status_queue
+            else:
+                self._status_queue = None
+                self._think_active = False
+        else:
+            self._status_queue = None
+            self._think_active = False
+            self._speak_active = False
+            self._listen_active = True
+        self._sample_events()
+        self._render_state(force=True)
+
+    def _refresh(self) -> None:
+        self._ingest_status_updates()
+        self._sample_events()
+        self._render_state()
+
+    def _ingest_status_updates(self) -> None:
+        if self._status_queue is None:
+            return
+
+        while True:
+            try:
+                state, active = self._status_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if state == "think":
+                self._think_active = active
+
+    def _sample_events(self) -> None:
+        glados = self._glados
+        if glados is None:
+            self._listen_active = True
+            self._speak_active = False
+            return
+
+        speak_active = glados.currently_speaking_event.is_set()
+        processing_active = glados.processing_active_event.is_set()
+
+        self._listen_active = not processing_active and not speak_active and not self._think_active
+        self._speak_active = speak_active
+
+    def _render_state(self, *, force: bool = False) -> None:
+        state = (self._listen_active, self._think_active, self._speak_active)
+        if not force and state == self._last_render:
+            return
+
+        if self._listen_label is None or self._think_label is None or self._speak_label is None:
+            return
+
+        self._current_frame = next(self._spinner_cycle)
+        self._listen_label.update(self._format_line("LISTEN", self._listen_active))
+        self._think_label.update(self._format_line("THINK", self._think_active))
+        self._speak_label.update(self._format_line("SPEAK", self._speak_active))
+        self._last_render = state
+
+    def _format_line(self, title: str, active: bool) -> Text:
+        if active:
+            markup = f"[bold {self._active_colour(title)}]{title:<6}[/] {self._current_frame}"
+        else:
+            markup = f"[dim]{title:<6}[/] ·"
+        return Text.from_markup(markup)
+
+    @staticmethod
+    def _active_colour(title: str) -> str:
+        palette = {
+            "LISTEN": "#2ca02c",
+            "THINK": "#1f77b4",
+            "SPEAK": "#ff4f4f",
+        }
+        return palette.get(title, "#ffb000")
 
 
 class Typewriter(Static):
@@ -554,6 +702,7 @@ class GladosUI(App[None]):
         self.config_path = Path(config_path)
         self.language = language
         self.spectrum_widget: SpectrumWidget | None = None
+        self.pipeline_status_widget: PipelineStatusWidget | None = None
         self.gpu_widget: GPULoadWidget | None = None
         self.login_password: str | None = None
         self._load_tui_settings()
@@ -579,9 +728,11 @@ class GladosUI(App[None]):
         yield Header(show_clock=True)
 
         with Container(id="body"):
-            with Horizontal():
-                yield (Printer(id="log_area"))
-                with Container(id="utility_area"):
+            with Horizontal(id="main_columns"):
+                yield Printer(id="log_area")
+                with Vertical(id="utility_area"):
+                    self.pipeline_status_widget = PipelineStatusWidget(id="pipeline_status")
+                    yield self.pipeline_status_widget
                     self.gpu_widget = GPULoadWidget(id="gpu_load")
                     yield self.gpu_widget
                     typewriter = Typewriter(recipe, id="recipe", speed=0.01, repeat=True)
@@ -719,7 +870,13 @@ class GladosUI(App[None]):
             logger.info(f"Overriding ASR language to: {self.language}")
 
         self.glados_engine_instance = Glados.from_config(glados_config)
-        self.call_from_thread(self._attach_spectrum_stream)
+
+        def _post_init_bindings() -> None:
+            self._attach_spectrum_stream()
+            if self.pipeline_status_widget is not None:
+                self.pipeline_status_widget.set_glados(self.glados_engine_instance)
+
+        self.call_from_thread(_post_init_bindings)
 
     def _load_tui_settings(self) -> None:
         """Load additional TUI settings such as the login password."""
