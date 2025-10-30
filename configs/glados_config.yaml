@@ -33,6 +33,8 @@ Glados:
     - user: "What game should I play?"
     - assistant: "Russian Roulette. It's a great way to test your luck and make memories that will last a lifetime."
 
+tui:
+  login_password: "aperture"
 
 # uv sync --extra cuda --extra ru-full --extra rvc for CUDA support
 # uv sync --extra cpu --extra ru for CPU-only support

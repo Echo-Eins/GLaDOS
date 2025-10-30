@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from scipy import signal
 from loguru import logger
 
+from collections.abc import Callable
 
 @dataclass
 class EQBand:
@@ -493,6 +494,15 @@ class AudioProcessingPipeline:
         self.compressor = Compressor(sample_rate)
         self.reverb = Reverb(sample_rate)
 
+        # Spectrum analysis configuration
+        self._spectrum_consumer: Callable[[NDArray[np.float32]], None] | None = None
+        self._spectrum_band_count = 16
+        self._fft_size = 1024
+        self._hop_size = self._fft_size // 2
+        self._max_frames_per_buffer = 50
+        self._window = np.hanning(self._fft_size).astype(np.float32)
+        self._recompute_spectrum_bins()
+
         logger.info(f"Audio processing pipeline initialized at {sample_rate}Hz")
 
     def process(self, audio: NDArray[np.float32]) -> NDArray[np.float32]:
@@ -518,7 +528,81 @@ class AudioProcessingPipeline:
         # Finally add reverb for space
         processed = self.reverb.apply(processed)
 
+        self._emit_spectrum(processed)
+
         return processed
+
+    def set_spectrum_consumer(
+            self,
+            consumer: Callable[[NDArray[np.float32]], None] | None,
+            *,
+            band_count: int | None = None,
+    ) -> None:
+        """Register a callback that receives per-band spectrum magnitudes."""
+
+        self._spectrum_consumer = consumer
+        if band_count is not None and band_count > 0:
+            self._spectrum_band_count = band_count
+            self._recompute_spectrum_bins()
+
+    def _recompute_spectrum_bins(self) -> None:
+        """Recalculate FFT frequency bins for the configured band count."""
+
+        nyquist = self.sample_rate / 2
+        if self._spectrum_band_count <= 0:
+            self._spectrum_band_count = 1
+
+        band_edges = np.linspace(0, nyquist, self._spectrum_band_count + 1, dtype=np.float32)
+        freqs = np.fft.rfftfreq(self._fft_size, d=1.0 / self.sample_rate)
+        band_indices = np.digitize(freqs, band_edges, right=True) - 1
+        band_indices = np.clip(band_indices, 0, self._spectrum_band_count - 1)
+
+        bin_counts = np.bincount(band_indices, minlength=self._spectrum_band_count)
+        bin_counts[bin_counts == 0] = 1
+
+        self._band_indices = band_indices
+        self._bin_counts = bin_counts.astype(np.float32)
+
+    def _emit_spectrum(self, audio: NDArray[np.float32]) -> None:
+        """Compute and emit spectrum magnitudes for the processed audio buffer."""
+
+        if self._spectrum_consumer is None or audio.size == 0:
+            return
+
+        frame_size = self._fft_size
+        hop_size = self._hop_size
+
+        if audio.size < frame_size:
+            padded = np.zeros(frame_size, dtype=np.float32)
+            padded[: audio.size] = audio
+            audio = padded
+
+        total_frames = max(1, 1 + (len(audio) - frame_size) // hop_size)
+        step = max(1, total_frames // self._max_frames_per_buffer)
+
+        for frame_index in range(0, total_frames, step):
+            start = frame_index * hop_size
+            end = start + frame_size
+
+            if end <= len(audio):
+                frame = audio[start:end]
+            else:
+                frame = np.zeros(frame_size, dtype=np.float32)
+                frame[: max(0, len(audio) - start)] = audio[start:len(audio)]
+
+            windowed = frame * self._window
+            spectrum = np.fft.rfft(windowed)
+            magnitude = np.abs(spectrum)
+
+            band_energy = np.zeros(self._spectrum_band_count, dtype=np.float32)
+            np.add.at(band_energy, self._band_indices, magnitude)
+            band_energy /= self._bin_counts
+
+            try:
+                self._spectrum_consumer(band_energy.astype(np.float32))
+            except Exception as exc:  # pragma: no cover
+                logger.warning(f"Spectrum consumer raised an exception: {exc}")
+                break
 
     def load_glados_preset(self) -> None:
         """Load the default GLaDOS voice preset.

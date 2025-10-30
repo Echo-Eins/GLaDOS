@@ -15,6 +15,9 @@ from loguru import logger
 from pydantic import BaseModel, HttpUrl
 import yaml
 
+import numpy as np
+from numpy.typing import NDArray
+
 from ..ASR import TranscriberProtocol, get_audio_transcriber
 from ..audio_io import AudioProtocol, get_audio_system
 from ..TTS import SpeechSynthesizerProtocol, get_speech_synthesizer
@@ -198,6 +201,11 @@ class Glados:
         self.announcement = announcement
         self._messages: list[dict[str, str]] = list(personality_preprompt)
 
+        # Spectrum sharing infrastructure for UI widgets
+        self._spectrum_band_count = 16
+        self.spectrum_queue: queue.Queue[NDArray[np.float32]] = queue.Queue(maxsize=256)
+        self._register_spectrum_stream()
+
         # Initialize spoken text converter, that converts text to spoken text. eg. 12 -> "twelve"
         self._stc = stc.SpokenTextConverter()
 
@@ -289,6 +297,36 @@ class Glados:
         # IMPORTANT: Do this AFTER all threads are started so audio system is operational
         # This allows user to interact with GLaDOS while warmup happens in background
         self._start_llm_warmup_thread()
+
+    def _register_spectrum_stream(self) -> None:
+        """Connect the TTS pipeline spectrum output to an internal queue for the UI."""
+
+        register = getattr(self._tts, "register_spectrum_consumer", None)
+        if not callable(register):
+            return
+
+        def _consumer(bands: NDArray[np.float32]) -> None:
+            try:
+                frame = np.asarray(bands, dtype=np.float32).copy()
+            except Exception:
+                frame = np.array(bands, dtype=np.float32, copy=True)
+
+            try:
+                self.spectrum_queue.put_nowait(frame)
+            except queue.Full:
+                try:
+                    self.spectrum_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self.spectrum_queue.put_nowait(frame)
+                except queue.Full:
+                    pass
+
+        try:
+            register(_consumer, band_count=self._spectrum_band_count)
+        except TypeError:
+            register(_consumer)
 
     def _start_llm_warmup_thread(self) -> None:
         """

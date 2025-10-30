@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 from loguru import logger
-
+from collections.abc import Callable
 from .tts_silero_ru import SileroRuSynthesizer
 from ..audio_processing.rvc_processor import create_rvc_processor
 from ..audio_processing.audio_processor import AudioProcessingPipeline
@@ -174,6 +174,20 @@ class GLaDOSRuSynthesizer:
         )
 
         return audio
+
+    def register_spectrum_consumer(
+            self,
+            consumer: Callable[[NDArray[np.float32]], None] | None,
+            *,
+            band_count: int | None = None,
+    ) -> None:
+        """Register a callback that receives spectrum frames from the audio processor."""
+
+        if not self.enable_audio_processing or self.audio_processor is None:
+            logger.debug("register_spectrum_consumer called but audio processing is disabled")
+            return
+
+        self.audio_processor.set_spectrum_consumer(consumer, band_count=band_count)
 
     def load_preset(self, preset_name: str) -> None:
         """Load an audio processing preset.

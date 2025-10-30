@@ -79,10 +79,15 @@ HeaderClock {
     padding: 0 1;
 }
 
-#text_block {
+#spectrum_block {
     align: center middle;
     text-align: center;
-    width: 15;
+    width: 20;
+    padding: 0 1;
+}
+
+#spectrum_widget {
+    height: 100%;
 }
 
 #recipe {

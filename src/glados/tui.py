@@ -3,7 +3,9 @@ from pathlib import Path
 import random
 import sys
 from typing import ClassVar, cast
-
+import yaml
+import queue
+from collections import deque
 from loguru import logger
 from rich.text import Text
 from textual import events
@@ -11,13 +13,130 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Digits, Footer, Header, Label, Log, RichLog, Static
+from textual.widgets import Digits, Input
+from textual.widgets import Footer, Header, Label, Log, RichLog, Static
 from textual.worker import Worker, WorkerState
-
+import numpy as np
 from glados.core.engine import Glados, GladosConfig
 from glados.glados_ui.text_resources import aperture, help_text, login_text, recipe
 
 # Custom Widgets
+
+class SpectrumWidget(Static):
+    """Visualize FFT band energies as animated columns."""
+
+    DEFAULT_CSS = """
+    SpectrumWidget {
+        color: $primary;
+        padding: 0 1;
+        min-height: 10;
+    }
+    """
+
+    def __init__(
+        self,
+        data_queue: queue.Queue[np.ndarray] | None = None,
+        *,
+        num_bands: int = 16,
+        history: int = 12,
+        height: int = 10,
+        update_interval: float = 0.1,
+        decay: float = 0.92,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._queue = data_queue
+        self._num_bands = num_bands
+        self._history = deque(maxlen=max(1, history))
+        self._height = max(3, height)
+        self._update_interval = update_interval
+        self._decay = decay
+        self._blank_text = Text("\n".join([" " * (self._num_bands * 2 - 1)] * self._height))
+
+    def set_data_queue(self, data_queue: queue.Queue[np.ndarray] | None) -> None:
+        """Attach a queue that supplies spectrum frames."""
+
+        self._queue = data_queue
+
+    def on_mount(self) -> None:
+        self.set_interval(self._update_interval, self._refresh)
+
+    def _refresh(self) -> None:
+        updated = self._ingest_frames()
+
+        if not self._history:
+            self.update(self._blank_text)
+            return
+
+        if not updated:
+            decayed = np.copy(self._history[-1]) * self._decay
+            np.clip(decayed, 0.0, None, out=decayed)
+            self._history.append(decayed)
+
+        self._render()
+
+    def _ingest_frames(self) -> bool:
+        if self._queue is None:
+            return False
+
+        received = False
+        while True:
+            try:
+                frame = self._queue.get_nowait()
+            except queue.Empty:
+                break
+
+            arr = np.asarray(frame, dtype=np.float32)
+            if arr.size == 0:
+                continue
+            if arr.size != self._num_bands:
+                arr = self._resample(arr, self._num_bands)
+
+            self._history.append(arr)
+            received = True
+
+        return received
+
+    def _resample(self, values: np.ndarray, target: int) -> np.ndarray:
+        x_old = np.linspace(0.0, 1.0, num=values.size, endpoint=True)
+        x_new = np.linspace(0.0, 1.0, num=target, endpoint=True)
+        resampled = np.interp(x_new, x_old, values)
+        return resampled.astype(np.float32)
+
+    def _render(self) -> None:
+        stack = np.vstack(self._history)
+        averaged = stack.mean(axis=0)
+        max_value = float(np.max(averaged)) if averaged.size else 0.0
+        if max_value <= 0:
+            normalized = np.zeros(self._num_bands, dtype=np.float32)
+        else:
+            normalized = np.clip(averaged / max_value, 0.0, 1.0)
+
+        levels = np.round(normalized * self._height).astype(int)
+        rows: list[str] = []
+        for level in range(self._height, 0, -1):
+            row_segments: list[str] = []
+            for idx, band_level in enumerate(levels):
+                if band_level >= level:
+                    color = self._color_for_value(normalized[idx])
+                    row_segments.append(f"[{color}]█[/]")
+                else:
+                    row_segments.append(" ")
+            rows.append(" ".join(row_segments))
+
+        baseline = "[dim]" + "─ " * self._num_bands + "[/dim]"
+        rows.append(baseline.rstrip())
+        self.update(Text("\n".join(rows)))
+
+    @staticmethod
+    def _color_for_value(value: float) -> str:
+        if value < 0.25:
+            return "#1f77b4"
+        if value < 0.5:
+            return "#2ca02c"
+        if value < 0.75:
+            return "#ffb000"
+        return "#ff4f4f"
 
 
 class Printer(RichLog):
@@ -173,6 +292,10 @@ class SplashScreen(Screen[None]):
         logger.error("Splash screen ANSI art file not found. Using placeholder.")
         SPLASH_ANSI = Text.from_markup("[bold red]Splash ANSI Art Missing[/bold red]")
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._password_modal_open = False
+
     def compose(self) -> ComposeResult:
         """
         Compose the layout for the splash screen.
@@ -208,22 +331,76 @@ class SplashScreen(Screen[None]):
         self.set_interval(0.5, self.scroll_end)
 
     def on_key(self, event: events.Key) -> None:
-        """
-        Handle key press events on the splash screen.
+        """Prompt for the password when any key is pressed."""
+        self._prompt_for_password()
 
-        This method is triggered when a key is pressed during the splash screen display.
-        All keybinds which are active in the main app are active here automatically
-        so, for example, ctrl-q will terminate the app. They do not need to be handled.
-        Any other key will start the GlaDOS engine and then dismiss the splash screen.
+    def _prompt_for_password(self) -> None:
+        app = cast(GladosUI, self.app)
+        if self._password_modal_open:
+            return
+        if not app.login_password:
+            self._start_glados()
+            return
+        self._password_modal_open = True
+        app.push_screen(PasswordModal(self))
 
-        Args:
-            event (events.Key): The key event that was triggered.
-        """
-        app = cast(GladosUI, self.app)  # mypy gets confused about app's type
+    def _start_glados(self) -> None:
+        app = cast(GladosUI, self.app)
         if app.glados_engine_instance:
             app.glados_engine_instance.play_announcement()
             app.start_glados()
             self.dismiss()
+        else:
+            app.notify("AI engine is not ready yet.", severity="warning")
+
+        def handle_login_success(self) -> None:
+            self._start_glados()
+
+        def on_password_modal_closed(self) -> None:
+            self._password_modal_open = False
+
+        class PasswordModal(ModalScreen[None]):
+            """Modal screen for entering the login password."""
+
+            def __init__(self, splash_screen: "SplashScreen") -> None:
+                super().__init__()
+                self._splash_screen = splash_screen
+
+            def compose(self) -> ComposeResult:
+                with Container(id="password_dialog"):
+                    with Vertical(id="password_dialog_content"):
+                        yield Label("ENTER PASSWORD", id="password_prompt")
+                        yield Input(
+                            password=True,
+                            placeholder="••••••",
+                            id="password_input",
+                        )
+
+            def on_mount(self) -> None:
+                password_input = self.query_one("#password_input", Input)
+                password_input.focus()
+
+            def on_input_submitted(self, event: Input.Submitted) -> None:
+                app = cast(GladosUI, self.app)
+                entered_password = event.value
+                event.input.value = ""
+                expected_password = app.login_password or ""
+
+                if entered_password == expected_password:
+                    self._splash_screen.handle_login_success()
+                    self.dismiss()
+                else:
+                    app.notify("Неверный пароль", severity="error")
+                    event.input.focus()
+
+            def on_key(self, event: events.Key) -> None:
+                if event.key == "escape":
+                    self.dismiss()
+                    event.stop()
+
+            def dismiss(self, result: object | None = None) -> None:
+                self._splash_screen.on_password_modal_closed()
+                super().dismiss(result)
 
 
 class HelpScreen(ModalScreen[None]):
@@ -303,6 +480,9 @@ class GladosUI(App[None]):
         super().__init__(**kwargs)
         self.config_path = Path(config_path)
         self.language = language
+        self.spectrum_widget: SpectrumWidget | None = None
+        self.login_password: str | None = None
+        self._load_tui_settings()
 
     def compose(self) -> ComposeResult:
         """
@@ -335,10 +515,9 @@ class GladosUI(App[None]):
 
         with Container(id="block_container", classes="fadeable"):
             yield ScrollingBlocks(id="scrolling_block", classes="block")
-            with Vertical(id="text_block", classes="block"):
-                yield Digits("2.67")
-                yield Digits("1002")
-                yield Digits("45.6")
+            with Vertical(id="spectrum_block", classes="block"):
+                self.spectrum_widget = SpectrumWidget(id="spectrum_widget")
+                yield self.spectrum_widget
             yield Label(self.LOGO_ANSI, id="logo_block", classes="block")
 
     def on_load(self) -> None:
@@ -464,6 +643,43 @@ class GladosUI(App[None]):
             logger.info(f"Overriding ASR language to: {self.language}")
 
         self.glados_engine_instance = Glados.from_config(glados_config)
+        self.call_from_thread(self._attach_spectrum_stream)
+
+    def _load_tui_settings(self) -> None:
+        """Load additional TUI settings such as the login password."""
+        self.login_password = None
+
+        if not self.config_path.exists():
+            logger.warning(f"TUI config file not found: {self.config_path}")
+            return
+
+        config_data: dict | None = None
+        for encoding in ("utf-8", "utf-8-sig"):
+            try:
+                config_data = yaml.safe_load(self.config_path.read_text(encoding=encoding))
+                break
+            except UnicodeDecodeError:
+                if encoding == "utf-8-sig":
+                    logger.error(f"Could not decode TUI config file {self.config_path}")
+                    return
+            except OSError as exc:
+                logger.error(f"Failed to read TUI config file {self.config_path}: {exc}")
+                return
+            except yaml.YAMLError as exc:
+                logger.error(f"Failed to parse TUI config file {self.config_path}: {exc}")
+                return
+
+        if not isinstance(config_data, dict):
+            logger.warning("Unexpected TUI config format; expected a mapping at top level.")
+            return
+
+        tui_config = config_data.get("tui")
+        if isinstance(tui_config, dict):
+            login_password = tui_config.get("login_password")
+            if login_password is not None:
+                self.login_password = str(login_password)
+        else:
+            logger.debug("No 'tui' section found in config; skipping TUI-specific settings.")
 
     def start_instantiation(self) -> None:
         """Starts the worker to instantiate the slow class."""
@@ -475,6 +691,10 @@ class GladosUI(App[None]):
             self.instantiate_glados,  # The callable function
             thread=True,  # Run in a thread (default)
         )
+
+    def _attach_spectrum_stream(self) -> None:
+        if self.spectrum_widget and self.glados_engine_instance:
+            self.spectrum_widget.set_data_queue(self.glados_engine_instance.spectrum_queue)
 
     @classmethod
     def run_app(cls, config_path: str | Path = "glados_config.yaml") -> None:
