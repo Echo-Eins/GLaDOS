@@ -29,6 +29,20 @@ class SpokenTextConverter:
         The meeting is at three o'clock on one/one/twenty twenty-four.
     """
 
+    # Transliteration map for English to Russian (Cyrillic)
+    TRANSLITERATION_MAP: ClassVar[dict[str, str]] = {
+        'a': 'а', 'b': 'б', 'c': 'к', 'd': 'д', 'e': 'е', 'f': 'ф',
+        'g': 'г', 'h': 'х', 'i': 'и', 'j': 'дж', 'k': 'к', 'l': 'л',
+        'm': 'м', 'n': 'н', 'o': 'о', 'p': 'п', 'q': 'кв', 'r': 'р',
+        's': 'с', 't': 'т', 'u': 'у', 'v': 'в', 'w': 'в', 'x': 'кс',
+        'y': 'й', 'z': 'з',
+        'A': 'А', 'B': 'Б', 'C': 'К', 'D': 'Д', 'E': 'Е', 'F': 'Ф',
+        'G': 'Г', 'H': 'Х', 'I': 'И', 'J': 'Дж', 'K': 'К', 'L': 'Л',
+        'M': 'М', 'N': 'Н', 'O': 'О', 'P': 'П', 'Q': 'Кв', 'R': 'Р',
+        'S': 'С', 'T': 'Т', 'U': 'У', 'V': 'В', 'W': 'В', 'X': 'Кс',
+        'Y': 'Й', 'Z': 'З'
+    }
+
     CONTRACTIONS: ClassVar[dict[str, str]] = {
         "I'm": "I am",
         "I'll": "I will",
@@ -470,6 +484,112 @@ class SpokenTextConverter:
         """
         return bool(self.convertible_pattern.search(text))
 
+    def _is_russian_text(self, text: str) -> bool:
+        """
+        Detect if the text is predominantly Russian (Cyrillic).
+
+        Returns True if more than 50% of alphabetic characters are Cyrillic.
+        """
+        cyrillic_count = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
+        latin_count = sum(1 for c in text if c.isalpha() and c.isascii())
+
+        total = cyrillic_count + latin_count
+        if total == 0:
+            return False
+
+        return cyrillic_count / total > 0.5
+
+    def _transliterate_to_cyrillic(self, text: str) -> str:
+        """
+        Transliterate English words to Cyrillic for Russian TTS.
+
+        This allows Russian TTS to pronounce English words phonetically.
+        Example: "mistook" → "мистук", "comedy" → "комедй"
+        """
+        # Only transliterate Latin words, keep everything else
+        def transliterate_word(match: re.Match) -> str:
+            word = match.group(0)
+            # Check if word is all Latin letters
+            if all(c.isalpha() and c.isascii() or c in "'-" for c in word):
+                # Transliterate letter by letter
+                result = []
+                for char in word:
+                    if char in self.TRANSLITERATION_MAP:
+                        result.append(self.TRANSLITERATION_MAP[char])
+                    else:
+                        result.append(char)  # Keep punctuation as is
+                return ''.join(result)
+            return word
+
+        # Match words (sequences of letters, hyphens, and apostrophes)
+        return re.sub(r"[A-Za-z][-'A-Za-z]*", transliterate_word, text)
+
+    def _number_to_russian_words(self, num: float | str) -> str:
+        """
+        Convert a number to Russian words.
+
+        Examples:
+            42 → "сорок два"
+            3.14 → "три точка один четыре"
+            -17 → "минус семнадцать"
+        """
+        try:
+            if isinstance(num, str):
+                if "." not in num or num.endswith(".0"):
+                    num = int(float(num))
+                else:
+                    num = float(num)
+
+            if isinstance(num, int) or (isinstance(num, float) and num.is_integer()):
+                num = int(num)
+
+            if num == 0:
+                return "ноль"
+
+            ones = ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"]
+            teens = ["десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать",
+                     "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"]
+            tens = ["", "", "двадцать", "тридцать", "сорок", "пятьдесят",
+                    "шестьдесят", "семьдесят", "восемьдесят", "девяносто"]
+            hundreds = ["", "сто", "двести", "триста", "четыреста", "пятьсот",
+                        "шестьсот", "семьсот", "восемьсот", "девятьсот"]
+
+            # Handle negative
+            if num < 0:
+                return "минус " + self._number_to_russian_words(abs(num))
+
+            # Handle decimal
+            if isinstance(num, float):
+                str_num = f"{num:.10f}".rstrip("0")
+                if "." in str_num:
+                    int_part, dec_part = str_num.split(".")
+                    result = self._number_to_russian_words(int(int_part))
+                    result += " точка " + " ".join(ones[int(d)] if int(d) < len(ones) else str(d) for d in dec_part)
+                    return result
+
+            # Handle integers up to 999
+            if num < 10:
+                return ones[num]
+            elif num < 20:
+                return teens[num - 10]
+            elif num < 100:
+                tens_digit = num // 10
+                ones_digit = num % 10
+                return (tens[tens_digit] + (" " + ones[ones_digit] if ones_digit else "")).strip()
+            elif num < 1000:
+                hundreds_digit = num // 100
+                remainder = num % 100
+                result = hundreds[hundreds_digit]
+                if remainder:
+                    result += " " + self._number_to_russian_words(remainder)
+                return result.strip()
+            else:
+                # For larger numbers, fall back to digit-by-digit
+                return " ".join(ones[int(d)] if int(d) < len(ones) else str(d) for d in str(num))
+
+        except (ValueError, TypeError):
+            return str(num)
+
     def _convert_mathematical_notation(self, text: str) -> str:
         """
         Convert mathematical notation to spoken form.
@@ -615,6 +735,10 @@ class SpokenTextConverter:
         The conversion handles various text elements like numbers, dates, times, currency, and percentages,
         transforming them into their spoken-word representations.
 
+        For Russian text (detected by Cyrillic characters):
+        - Transliterates English words to Cyrillic for proper TTS pronunciation
+        - Converts numbers to Russian words
+
         Args:
             text (str): The input text to convert.
 
@@ -629,6 +753,19 @@ class SpokenTextConverter:
             - Handles complex number formats including large numbers and decimals
             - Supports multiple currency symbols and percentage conversions
         """
+        # Detect if text is Russian
+        is_russian = self._is_russian_text(text)
+
+        # If Russian, transliterate English words first
+        if is_russian:
+            text = self._transliterate_to_cyrillic(text)
+            # Convert percentages to Russian
+            text = re.sub(r"(\d+\.?\d*)%", lambda m: f"{self._number_to_russian_words(m.group(1))} процентов", text)
+            # Convert standalone numbers to Russian
+            text = re.sub(r"\b\d+\.?\d*\b", lambda m: self._number_to_russian_words(m.group()), text)
+            return text.strip()
+
+        # English processing (original logic)
         # 1. First expand contractions (this part works correctly)
         for contraction, expansion in sorted(self.CONTRACTIONS.items(), key=lambda x: len(x[0]), reverse=True):
             text = text.replace(contraction, expansion)

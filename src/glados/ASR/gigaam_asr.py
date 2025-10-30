@@ -127,7 +127,7 @@ class AudioTranscriber:
             # Log before emotion analysis
             logger.debug(f"GigaAM calling Emotion model on: {audio_path}")
             emotion_probs = self._emotion_model.get_probs(str(audio_path))
-            logger.debug(f"GigaAM Emotion raw result: {dict(emotion_probs)}")
+            logger.info(f"GigaAM Emotion raw result: {dict(emotion_probs)}")
 
             # CRITICAL: Clear CUDA cache to prevent memory accumulation
             # GigaAM models don't have explicit reset(), so we clear torch cache
