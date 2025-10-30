@@ -97,14 +97,35 @@ class AudioTranscriber:
         if audio_array.ndim != 1:
             audio_array = audio_array.reshape(-1)
 
-        # Diagnostic logging
+        # CRITICAL: Extensive diagnostic logging to catch corrupted audio
         duration_s = len(audio_array) / self.SAMPLE_RATE
         rms = np.sqrt(np.mean(audio_array**2))
         max_val = np.max(np.abs(audio_array))
+        min_val = np.min(audio_array)
+        mean_val = np.mean(audio_array)
+
+        # Check for inf/nan in audio array BEFORE writing to file
+        has_nan = np.isnan(audio_array).any()
+        has_inf = np.isinf(audio_array).any()
+
+        if has_nan or has_inf:
+            logger.error(
+                f"🚨 GigaAM: Audio array contains NaN/inf values BEFORE wav write! "
+                f"has_nan={has_nan}, has_inf={has_inf}. This audio is corrupted!"
+            )
+            return "", {}
+
         logger.debug(
             f"GigaAM input audio: duration={duration_s:.3f}s, samples={len(audio_array)}, "
-            f"RMS={rms:.6f}, max_abs={max_val:.6f}, dtype={audio_array.dtype}"
+            f"RMS={rms:.6f}, max={max_val:.6f}, min={min_val:.6f}, mean={mean_val:.6f}, dtype={audio_array.dtype}"
         )
+
+        # Warning for suspiciously long audio (may indicate VAD corruption)
+        if duration_s > 10.0:
+            logger.warning(
+                f"⚠️ GigaAM: Very long audio segment ({duration_s:.1f}s)! "
+                f"This may indicate VAD state corruption causing continuous false positives."
+            )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             temp_path = Path(tmp.name)

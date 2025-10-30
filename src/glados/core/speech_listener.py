@@ -67,6 +67,7 @@ class SpeechListener:
     SIMILARITY_THRESHOLD: int = 2  # Threshold for wake word similarity
     ECHO_GRACE_PERIOD: float = 0.8  # Seconds to ignore VAD after speaking ends (acoustic echo suppression)
     MIN_VOICE_ACTIVITY_RATIO: float = 0.20  # Minimum fraction of VAD-positive frames required to treat audio as speech
+    MAX_RECORDING_DURATION: float = 30.0  # Maximum recording duration in seconds to prevent infinite accumulation
 
     def __init__(
         self,
@@ -253,6 +254,20 @@ class SpeechListener:
 
         self._vad_flags.append(vad_confidence)
         self._speaking_flags.append(self.currently_speaking_event.is_set())
+
+        # CRITICAL: Check if recording duration exceeds maximum limit
+        # This prevents VAD state corruption from causing infinite accumulation
+        # When VAD is corrupted, it "sees" voice in pure noise and never pauses
+        current_duration = len(self._samples) * self.VAD_SIZE / 1000.0  # Convert to seconds
+        if current_duration > self.MAX_RECORDING_DURATION:
+            logger.error(
+                f"🚨 Recording exceeded maximum duration ({current_duration:.1f}s > {self.MAX_RECORDING_DURATION}s)! "
+                f"This indicates VAD state corruption - VAD is detecting 'voice' in continuous noise. "
+                f"Forcing reset to prevent infinite accumulation."
+            )
+            # Force reset without processing - this is corrupted data
+            self.reset()
+            return
 
         if not vad_confidence:
             self._gap_counter += 1
