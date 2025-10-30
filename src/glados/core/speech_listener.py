@@ -380,7 +380,9 @@ class SpeechListener:
         if recognition.text:
             logger.success(f"ASR: '{recognition.text}'")
             if recognition.emotions:
-                logger.info(f"Emotions: {dict(recognition.emotions)}")
+                logger.success(f"Emotions: {dict(recognition.emotions)}")
+            else:
+                logger.debug(f"No emotions detected (emotions={recognition.emotions})")
 
             if self.wake_word and not self._wakeword_detected(recognition.text):
                 logger.info(f"Wake word '{self.wake_word}' not detected")
