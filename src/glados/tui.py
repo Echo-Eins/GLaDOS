@@ -14,11 +14,12 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Digits, Input
-from textual.widgets import Footer, Header, Label, Log, RichLog, Static
+from textual.widgets import Footer, Header, Label, Log, ProgressBar, RichLog, Static
 from textual.worker import Worker, WorkerState
 import numpy as np
 from glados.core.engine import Glados, GladosConfig
 from glados.glados_ui.text_resources import aperture, help_text, login_text, recipe
+from glados.telemetry import get_gpu_load_percentage
 
 # Custom Widgets
 
@@ -196,6 +197,78 @@ class ScrollingBlocks(Log):
         The interval timer ensures continuous block animation while the widget is displayed.
         """
         self.set_interval(0.18, self._animate_blocks)
+
+
+class GPULoadWidget(Static):
+    """Display the current GPU utilisation as a progress bar."""
+
+    DEFAULT_CSS = """
+    GPULoadWidget {
+        layout: vertical;
+        padding: 0 1;
+        width: 100%;
+    }
+
+    GPULoadWidget > Label {
+        text-align: center;
+    }
+    """
+
+    def __init__(self, *, update_interval: float = 0.5, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._update_interval = update_interval
+        self._label: Label | None = None
+        self._progress: ProgressBar | None = None
+
+    def compose(self) -> ComposeResult:
+        self._label = Label("GPU Load: N/A", id="gpu_load_label")
+        self._progress = ProgressBar(
+            id="gpu_progress_bar",
+            total=100,
+            show_eta=False,
+            show_percentage=False,
+        )
+        self._progress.update(progress=0)
+        yield self._label
+        yield self._progress
+
+    def on_mount(self) -> None:
+        self.set_interval(self._update_interval, self._refresh)
+
+    def _refresh(self) -> None:
+        load = get_gpu_load_percentage()
+        if load is None:
+            self._set_no_gpu()
+            return
+
+        load = max(0.0, min(100.0, load))
+        self._set_gpu_load(load)
+
+    def _set_no_gpu(self) -> None:
+        if self._label is None or self._progress is None:
+            return
+        self._label.update("GPU Load: N/A")
+        self._label.styles.color = "grey62"
+        self._progress.update(progress=0)
+        self._progress.bar_style = "grey30"
+
+    def _set_gpu_load(self, load: float) -> None:
+        if self._label is None or self._progress is None:
+            return
+
+        colour = self._colour_for_load(load)
+        self._label.update(f"GPU Load: {int(round(load))}%")
+        self._label.styles.color = colour
+        self._progress.bar_style = colour
+        self._progress.update(progress=load)
+
+    @staticmethod
+    def _colour_for_load(load: float) -> str:
+        if load < 40:
+            return "#2ca02c"
+        if load < 75:
+            return "#ffb000"
+        return "#ff4f4f"
 
 
 class Typewriter(Static):
@@ -481,6 +554,7 @@ class GladosUI(App[None]):
         self.config_path = Path(config_path)
         self.language = language
         self.spectrum_widget: SpectrumWidget | None = None
+        self.gpu_widget: GPULoadWidget | None = None
         self.login_password: str | None = None
         self._load_tui_settings()
 
@@ -508,6 +582,8 @@ class GladosUI(App[None]):
             with Horizontal():
                 yield (Printer(id="log_area"))
                 with Container(id="utility_area"):
+                    self.gpu_widget = GPULoadWidget(id="gpu_load")
+                    yield self.gpu_widget
                     typewriter = Typewriter(recipe, id="recipe", speed=0.01, repeat=True)
                     yield typewriter
 
