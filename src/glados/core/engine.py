@@ -201,12 +201,7 @@ class Glados:
         # Initialize spoken text converter, that converts text to spoken text. eg. 12 -> "twelve"
         self._stc = stc.SpokenTextConverter()
 
-        # warm up onnx ASR model, this is needed to avoid long pauses on first request
-        logger.info("Warming up ASR model...")
-        self._asr_model.transcribe_file(resource_path("data/0.wav"))
-        logger.success("ASR model warmed up successfully")
-
-        # Initialize events for thread synchronization (BEFORE warmup to avoid blocking audio)
+        # Initialize events for thread synchronization
         self.processing_active_event = threading.Event()  # Indicates if input processing is active (ASR + LLM + TTS)
         self.currently_speaking_event = threading.Event()  # Indicates if the assistant is currently speaking
         self.shutdown_event = threading.Event()  # Event to signal shutdown of all threads

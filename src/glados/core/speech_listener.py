@@ -66,8 +66,6 @@ class SpeechListener:
     PAUSE_LIMIT: int = 640  # Milliseconds of pause allowed before processing
     SIMILARITY_THRESHOLD: int = 2  # Threshold for wake word similarity
     ECHO_GRACE_PERIOD: float = 0.8  # Seconds to ignore VAD after speaking ends (acoustic echo suppression)
-    MIN_VOICE_ACTIVITY_RATIO: float = 0.20  # Minimum fraction of VAD-positive frames required to treat audio as speech
-    MAX_RECORDING_DURATION: float = 30.0  # Maximum recording duration in seconds to prevent infinite accumulation
 
     def __init__(
         self,
@@ -251,23 +249,8 @@ class SpeechListener:
             vad_confidence: True if voice activity is currently detected, False otherwise.
         """
         self._samples.append(sample)
-
         self._vad_flags.append(vad_confidence)
         self._speaking_flags.append(self.currently_speaking_event.is_set())
-
-        # CRITICAL: Check if recording duration exceeds maximum limit
-        # This prevents VAD state corruption from causing infinite accumulation
-        # When VAD is corrupted, it "sees" voice in pure noise and never pauses
-        current_duration = len(self._samples) * self.VAD_SIZE / 1000.0  # Convert to seconds
-        if current_duration > self.MAX_RECORDING_DURATION:
-            logger.error(
-                f"🚨 Recording exceeded maximum duration ({current_duration:.1f}s > {self.MAX_RECORDING_DURATION}s)! "
-                f"This indicates VAD state corruption - VAD is detecting 'voice' in continuous noise. "
-                f"Forcing reset to prevent infinite accumulation."
-            )
-            # Force reset without processing - this is corrupted data
-            self.reset()
-            return
 
         if not vad_confidence:
             self._gap_counter += 1
@@ -343,150 +326,69 @@ class SpeechListener:
         Processes the accumulated audio samples once a speech pause is detected.
 
         This method performs the following steps:
-        1. Checks if accumulated samples contain actual speech (not just noise/silence)
-        2. Transcribes the collected audio samples using the ASR model.
-        3. If transcription is successful:
+        1. Transcribes the collected audio samples using the ASR model.
+        2. If transcription is successful:
             a. Checks for the `wake_word` (if configured).
             b. If the wake word is detected (or not required), the transcribed text is
                placed into the `llm_queue`, and `processing_active_event` is set.
-        4. Resets the listener's internal state using `self.reset()`, preparing for the next input.
+        3. Resets the listener's internal state using `self.reset()`, preparing for the next input.
         """
         logger.debug("Detected pause after speech. Processing...")
 
-        # Check if samples contain actual speech energy (not just silence/noise)
         if not self._samples:
             logger.warning("No samples collected, skipping ASR")
             self.reset()
             return
 
         audio = np.concatenate(self._samples)
-        rms_energy = np.sqrt(np.mean(audio**2))
         duration_s = len(audio) / 16000
+        logger.info(f"Processing {duration_s:.2f}s audio with {len(self._samples)} samples")
 
-        # Always log RMS for debugging
-        logger.info(f"RMS energy: {rms_energy:.6f} | Samples: {len(self._samples)} | Total duration: {duration_s:.2f}s")
-
-        # Threshold: if RMS is too low, this is likely a false VAD trigger
-        if rms_energy < 0.01:  # Adjust threshold based on your microphone
-            logger.warning(f"🚫 Ignoring detected audio: RMS energy too low ({rms_energy:.6f} < 0.01), likely false VAD trigger")
-            self.reset()
-            return
-
-        # Check minimum duration to avoid processing very short audio segments
-        # that are likely false triggers, echoes, or incomplete speech
-        MIN_DURATION_S = 0.3
-        if duration_s < MIN_DURATION_S:
-            logger.warning(
-                f"🚫 Ignoring detected audio: Duration too short ({duration_s:.2f}s < {MIN_DURATION_S}s). "
-                f"This may be echo, noise, or incomplete speech. Speak longer phrases."
-            )
-            self.reset()
-            return
-
-        # Require a sufficient proportion of frames with positive VAD confidence.
-        # This helps suppress persistent false activations triggered by echo or noise.
-        #
-        # CRITICAL: We must ONLY count frames in the active speech region, excluding:
-        # 1. Pre-roll buffer (first ~25 frames from _buffer, mostly False)
-        # 2. Trailing silence (last ~20 frames waiting for PAUSE_LIMIT, all False)
-        #
-        # Calculate the active speech region: from first True VAD to last True VAD
-        total_frames = len(self._vad_flags)
-
+        # Echo detection: Discard segments where all voiced frames were captured while assistant was speaking
         # Find the range of actual speech activity
+        total_frames = len(self._vad_flags)
         first_voiced_idx = next((i for i, flag in enumerate(self._vad_flags) if flag), None)
         last_voiced_idx = next((i for i, flag in enumerate(reversed(self._vad_flags)) if flag), None)
 
-        if first_voiced_idx is None or last_voiced_idx is None:
-            # No voice activity detected at all
-            logger.warning(
-                "🚫 Ignoring detected audio: no voice activity detected in {} frames",
-                total_frames
+        if first_voiced_idx is not None and last_voiced_idx is not None:
+            # Convert last_voiced_idx from reversed index to forward index
+            last_voiced_idx = total_frames - 1 - last_voiced_idx
+
+            # Extract active region (from first voiced to last voiced, inclusive)
+            active_vad_flags = self._vad_flags[first_voiced_idx:last_voiced_idx + 1]
+            active_speaking_flags = self._speaking_flags[first_voiced_idx:last_voiced_idx + 1]
+
+            # Count voiced frames that occurred while assistant was speaking
+            voiced_frames_during_speech = sum(
+                1 for vad_flag, speaking_flag in zip(active_vad_flags, active_speaking_flags)
+                if vad_flag and speaking_flag
             )
-            self.reset()
-            return
+            voiced_frames = sum(active_vad_flags)
+            user_voiced_frames = voiced_frames - voiced_frames_during_speech
 
-        # Convert last_voiced_idx from reversed index to forward index
-        last_voiced_idx = total_frames - 1 - last_voiced_idx
+            # If all voice activity was during assistant speech, it's likely echo
+            if voiced_frames and user_voiced_frames <= 0:
+                logger.warning(
+                    "Ignoring detected audio: all voice activity occurred while assistant was speaking. "
+                    "Most likely acoustic echo."
+                )
+                self.reset()
+                return
 
-        # Extract active region (from first voiced to last voiced, inclusive)
-        active_vad_flags = self._vad_flags[first_voiced_idx:last_voiced_idx + 1]
-        active_speaking_flags = self._speaking_flags[first_voiced_idx:last_voiced_idx + 1]
-
-        # Filter out frames that happened while the assistant was actively speaking.
-        # Those frames are usually echo from our own TTS output and should not be
-        # counted towards the user's speech statistics.
-        user_frame_mask = [not speaking for speaking in active_speaking_flags]
-        user_active_frames = sum(user_frame_mask)
-        voiced_frames = sum(
-            1 for flag, keep in zip(active_vad_flags, user_frame_mask) if keep and flag
-        )
-
-        # Fall back to the raw active-frame count when all frames happened while the
-        # assistant was speaking (e.g. immediate wake word after TTS interruption).
-        effective_denominator = user_active_frames or len(active_vad_flags)
-        voice_ratio = (voiced_frames / effective_denominator) if effective_denominator else 0.0
-
-        logger.debug(
-            f"Voice activity stats | total_frames={total_frames} | "
-            f"active_region=[{first_voiced_idx}:{last_voiced_idx+1}] ({len(active_vad_flags)} frames) | "
-            f"voiced_frames={voiced_frames} | ratio={voice_ratio:.2%}"
-        )
-
-        if voice_ratio < self.MIN_VOICE_ACTIVITY_RATIO:
-            logger.warning(
-                "🚫 Ignoring detected audio: voice activity ratio too low ({:.0f}% < {:.0f}%). "
-                "Likely echo or background noise.",
-                voice_ratio * 100,
-                self.MIN_VOICE_ACTIVITY_RATIO * 100,
-            )
-            self.reset()
-            return
-
-        # Discard segments where all voiced frames were captured while the assistant itself was speaking.
-        # These are typically acoustic echoes that slipped through the interrupt logic.
-        # Also limit this check to the active speech region only.
-        active_vad_flags_in_region = active_vad_flags
-        active_speaking_flags_in_region = active_speaking_flags
-
-        voiced_frames_during_speech = sum(
-            1 for vad_flag, speaking_flag in zip(active_vad_flags_in_region, active_speaking_flags_in_region)
-            if vad_flag and speaking_flag
-        )
-        user_voiced_frames = voiced_frames - voiced_frames_during_speech
-
-        if voiced_frames and user_voiced_frames <= 0:
-            logger.warning(
-                "🚫 Ignoring detected audio: all voice activity occurred while assistant speech was active. "
-                "Most likely acoustic echo."
-            )
-            self.reset()
-            return
-
-        # Only feed the active speech portion to the ASR to avoid long silences
-        # or assistant echo contaminating the recognition request.
-        active_samples = self._samples[first_voiced_idx:last_voiced_idx + 1]
-        recognition = self.asr(active_samples)
+        recognition = self.asr(self._samples)
 
         if recognition.text:
-            logger.success(f"ASR text: '{recognition.text}'")
+            logger.success(f"ASR: '{recognition.text}'")
             if recognition.emotions:
-                logger.success(f"ASR emotions: {dict(recognition.emotions)}")
+                logger.info(f"Emotions: {dict(recognition.emotions)}")
 
             if self.wake_word and not self._wakeword_detected(recognition.text):
-                logger.info(f"Required wake word {self.wake_word=} not detected.")
+                logger.info(f"Wake word '{self.wake_word}' not detected")
             else:
                 self.llm_queue.put(recognition)
                 self.processing_active_event.set()
         else:
-            # ANOMALY: High RMS but empty ASR result - real speech may have been lost!
-            if rms_energy >= 0.01:
-                logger.error(
-                    f"⚠️ ANOMALY DETECTED: RMS energy was high ({rms_energy:.6f} >= 0.01) "
-                    f"but ASR returned empty text! Duration: {duration_s:.2f}s. "
-                    f"This may indicate: 1) Echo/noise mistaken for speech, 2) Audio quality issues, "
-                    f"or 3) Speech too unclear to recognize. Try speaking louder and more clearly."
-                )
+            logger.warning("ASR returned empty transcription")
 
         self.reset()
 
@@ -509,59 +411,22 @@ class SpeechListener:
             return RecognitionResult(text="", emotions=None)
 
         audio = np.concatenate(samples)
-
-        # Check audio amplitude and signal strength
         max_abs_val = np.max(np.abs(audio))
-        rms_val = np.sqrt(np.mean(audio**2))
-        logger.debug(f"ASR input | max_amplitude={max_abs_val:.6f}, RMS={rms_val:.6f}, samples={len(audio)}")
 
-        if max_abs_val < 1e-10:  # Threshold for effectively silent audio
-            logger.warning("ASR received effectively silent audio")
-            return RecognitionResult(text="", emotions=None)
-
-        # CRITICAL: Check signal amplitude BEFORE normalization
-        # Even if RMS is adequate, if max amplitude is very low, this is likely
-        # background noise or echo that will produce garbage after normalization
-        MIN_SIGNAL_AMPLITUDE = 0.01  # Minimum peak amplitude for valid speech
-        if max_abs_val < MIN_SIGNAL_AMPLITUDE:
-            logger.warning(
-                f"🚫 ASR: Signal amplitude too low (max={max_abs_val:.6f} < {MIN_SIGNAL_AMPLITUDE}). "
-                f"This is likely background noise or echo, not real speech. Skipping ASR to avoid NaN."
-            )
-            return RecognitionResult(text="", emotions=None)
-
-        # Additional check: peak-to-RMS ratio (crest factor)
-        # Real speech typically has crest factor of 3-6
-        # Pure noise/echo often has abnormal ratios (very high or very low)
-        crest_factor = max_abs_val / rms_val if rms_val > 1e-10 else 0
-        logger.debug(f"ASR crest factor (peak/RMS): {crest_factor:.2f}")
-
-        # If crest factor is abnormally high (>20), it's likely a spike/click, not speech
-        MAX_CREST_FACTOR = 20.0
-        if crest_factor > MAX_CREST_FACTOR:
-            logger.warning(
-                f"🚫 ASR: Abnormal crest factor ({crest_factor:.2f} > {MAX_CREST_FACTOR}). "
-                f"Signal contains spikes/clicks, not speech. Skipping ASR to avoid NaN."
-            )
+        if max_abs_val < 1e-10:
+            logger.warning("ASR received silent audio")
             return RecognitionResult(text="", emotions=None)
 
         # Normalize to full range [-1.0, 1.0]
         audio = audio / max_abs_val
 
-        emotions = None
-
+        # Call ASR
         if hasattr(self.asr_model, "transcribe_with_emotions"):
-            detected_text, emotions = getattr(self.asr_model, "transcribe_with_emotions")(audio)
-            # Sanitize emotions to remove NaN/inf values that would break JSON serialization
+            detected_text, emotions = self.asr_model.transcribe_with_emotions(audio)
             emotions = sanitize_emotions(emotions)
         else:
             detected_text = self.asr_model.transcribe(audio)
+            emotions = None
 
-        # Strip whitespace and check if result is empty
         detected_text = (detected_text or "").strip()
-
-        if not detected_text:
-            logger.warning("ASR produced empty or whitespace-only transcription")
-            return RecognitionResult(text="", emotions=emotions)
-
         return RecognitionResult(text=detected_text, emotions=emotions)
