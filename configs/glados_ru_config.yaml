@@ -144,7 +144,9 @@ Glados:
 
 # Запуск:
 #   uv run glados start --config configs/glados_ru_config.yaml
-#
+
+#   uv run glados tui --config configs/glados_ru_config.yaml
+
 # Пайплайн обработки:
 #   LLM Text → Silero TTS (xenia, 48kHz) → RVC (ru_glados.pth) → Audio Processing (EQ/Comp/Reverb) → Output
 #

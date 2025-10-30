@@ -14,9 +14,15 @@ colors for log items are hardcoded in the app
 
 $primary: #ffb000;
 $foreground: #ffb000;
+$foreground_dim: #d89a1a;
 $background: #282828;
 $surface: $background;
-
+$scrollbar_track: #3a3a3a;
+$scrollbar_hover_thumb: #ffd24d;
+$block_border: #cc8c00;
+$progress_border: #cc8c00;
+$progress_background: #1f1f1f;
+$recipe_text: #8c7030;
 
 
 
@@ -45,8 +51,8 @@ HeaderClock {
 }
 
 .block {
-    border: solid $primary;
-    color: $primary 80%;
+    border: solid $block_border;
+    color: $foreground_dim;
     height: 11;
     width: 22;
 }
@@ -57,8 +63,8 @@ HeaderClock {
     layer: bottom;
     padding: 1 4;
     width: 70%;
-    scrollbar-color: $primary 40%;
-    scrollbar-color-hover: $primary 86%;
+    scrollbar-color: $primary $scrollbar_track;
+    scrollbar-color-hover: $scrollbar_hover_thumb $scrollbar_track;
     scrollbar-size: 1 1;
     color: $foreground;
 }
@@ -68,7 +74,6 @@ HeaderClock {
     layout: vertical;
     align-horizontal: center;
     padding: 1 1 0 1;
-    gap: 1;
 }
 
 #gpu_load {
@@ -81,8 +86,8 @@ HeaderClock {
 
 ProgressBar#gpu_progress_bar {
     height: 1;
-    border: solid $primary 40%;
-    background: $background 60%;
+    border: solid $progress_border;
+    background: $progress_background;
 }
 
 #block_container {
@@ -111,7 +116,7 @@ ProgressBar#gpu_progress_bar {
 #recipe {
     scrollbar-size: 0 0;
     margin-top: 1;
-    color: $foreground 10%;
+    color: $recipe_text;
     layer: bottom;
 }
 
@@ -126,7 +131,7 @@ ProgressBar#gpu_progress_bar {
 #help_dialog {
     border-title-align: center;
     border-title-style: bold;
-    border: $primary 70% panel;
+    border: solid $primary;
     color: $primary;
     text-align: center;
     min-height: 20;
