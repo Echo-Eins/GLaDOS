@@ -1,4 +1,5 @@
 from pathlib import Path
+import gc
 
 import numpy as np
 from numpy.typing import NDArray
@@ -16,6 +17,7 @@ if hasattr(ort, "set_default_logger_severity"):
 class VAD:
     VAD_MODEL: Path = resource_path("models/ASR/silero_vad_v5.onnx")
     SAMPLE_RATE: int = 16000  # or 8000 only!
+    SESSION_RESET_INTERVAL: int = 100  # Reset ONNX session every N inferences to clear memory arena
 
     def __init__(self, model_path: Path = VAD_MODEL) -> None:
         """Initialize a Voice Activity Detection (VAD) model with an ONNX runtime inference session.
@@ -28,14 +30,10 @@ class VAD:
             - Sets up inference session with the specified model
             - Initializes internal state variables for processing audio chunks
         """
-        
-        providers = get_available_providers()
+        self.model_path = model_path
+        self.providers = get_available_providers()
 
-        self.ort_sess = ort.InferenceSession(
-            model_path,
-            sess_options=ort.SessionOptions(),
-            providers=providers,
-        )
+        self._create_session()
 
         self.avaliable_sample_rates = [8000, 16000]
 
@@ -43,14 +41,36 @@ class VAD:
         self._context: NDArray[np.float32]
         self._last_sr: int
         self._last_batch_size: int
+        self._inference_counter: int = 0
 
         self.reset_states()
 
+    def _create_session(self) -> None:
+        """Create or recreate ONNX Runtime InferenceSession.
+
+        This is called during __init__ and periodically to clear memory arena.
+        """
+        self.ort_sess = ort.InferenceSession(
+            self.model_path,
+            sess_options=ort.SessionOptions(),
+            providers=self.providers,
+        )
+
     def reset_states(self, batch_size: int = 1) -> None:
+        """Reset VAD internal state and clear accum accumulated memory.
+
+        This clears the LSTM state and context buffer, and triggers garbage
+        collection to help release ONNX Runtime memory arena allocations.
+        """
         self._state = np.zeros((2, batch_size, 128), dtype=np.float32)
         self._context = np.zeros(0, dtype=np.float32)
         self._last_sr = 0
         self._last_batch_size = 0
+
+        # CRITICAL: Force Python garbage collection to help release ONNX Runtime buffers
+        # ONNX Runtime accumulates memory arena allocations over time
+        # Explicit GC after state reset helps prevent accumulation
+        gc.collect()
 
     def __call__(self, audio_sample: NDArray[np.float32], sample_rate: int = SAMPLE_RATE) -> NDArray[np.float32]:
         """Process a batch of audio samples and return the VAD output.
@@ -65,6 +85,21 @@ class VAD:
         Raises:
             ValueError: If the number of samples is not supported.
         """
+        # CRITICAL: Periodically recreate ONNX session to clear memory arena
+        # ONNX Runtime accumulates internal buffers that can cause state corruption
+        # after 100+ inferences. Recreating session forces complete cleanup.
+        self._inference_counter += 1
+        if self._inference_counter >= self.SESSION_RESET_INTERVAL:
+            from loguru import logger
+            logger.debug(f"VAD: Recreating ONNX session after {self._inference_counter} inferences to clear memory arena")
+            old_sess = self.ort_sess
+            self._create_session()
+            del old_sess
+            gc.collect()
+            self._inference_counter = 0
+            # Reset state after session recreation
+            self.reset_states()
+
         num_samples = 512 if sample_rate == 16000 else 256
 
         if audio_sample.shape[-1] != num_samples:
