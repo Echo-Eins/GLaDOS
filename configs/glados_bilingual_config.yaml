@@ -15,12 +15,17 @@ Glados:
   interruptible: true
   audio_io: "sounddevice"
 
-  # EN-Branch Integration Configuration
-  enable_en_branch: true  # Enable parallel EN pipeline
+  # Legacy fields (required for backward compatibility)
+  asr_engine: "tdt"      # Main ASR engine (Russian)
+  voice: "glados_ru"     # Main voice (Russian GLaDOS with full audio pipeline)
+  language: "ru"         # Main language
 
-  # ASR Configuration
+  # EN-Branch Integration Configuration (for future integration)
+  enable_en_branch: true  # Enable parallel EN pipeline
   asr_ru_engine: "tdt"    # Russian ASR (GigaAM-RU)
   asr_en_engine: "whisper"  # English ASR (Whisper-small.en)
+  voice_ru: "silero_ru"  # Russian TTS (Silero V5 RU)
+  voice_en: "silero_en"  # English TTS (Silero EN)
 
   # Language Detection
   language_detection:
@@ -29,16 +34,10 @@ Glados:
     default_language: "ru"     # Default when confidence < threshold
     model_type: "4lang"        # Silero LID model (4lang or 95lang)
 
-  # TTS Configuration
-  voice_ru: "silero_ru"  # Russian TTS (Silero V5 RU)
-  voice_en: "silero_en"  # English TTS (Silero EN)
-
   # Audio Mixer
   audio_mixer:
     crossfade_ms: 40           # Crossfade duration
     target_sample_rate: 48000  # Output sample rate
-
-  language: "bilingual"  # Special mode for RU/EN processing
   wake_word: null
   announcement: "Neural network modules operational. Bilingual system ready."
 
