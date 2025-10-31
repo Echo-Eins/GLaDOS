@@ -1,50 +1,54 @@
-"""Language Identification (LID) module using Silero Language Classifier.
+"""Language Identification (LID) module using SpeechBrain VoxLingua107.
 
 This module provides language detection capabilities to route audio segments
 to appropriate language-specific processing pipelines (RU/EN branches).
+
+Uses speechbrain/lang-id-voxlingua107-ecapa from HuggingFace.
+Supports 107 languages but configured specifically for Russian/English detection.
 """
 
 from pathlib import Path
-import tempfile
 from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
-import soundfile as sf
 import torch
 from loguru import logger
 
 
-LanguageCode = Literal["ru", "en", "de", "es"]
+LanguageCode = Literal["ru", "en", "unknown"]
 
 
-class SileroLanguageID:
-    """Silero-based Language Identification for audio segments.
+class SpeechBrainLanguageID:
+    """SpeechBrain VoxLingua107 Language Identification for audio segments.
 
-    Uses Silero Language Classifier (95-language model)
-    to detect the language of speech in audio segments.
+    Uses ECAPA-TDNN model trained on 107 languages.
+    Configured for Russian/English detection with warnings for other languages.
 
-    Supported languages: ru, en, de, es, and 91 more
+    Achieves 6.7% error rate on VoxLingua107 dev set.
     """
 
     SAMPLE_RATE: int = 16000
-    MIN_CONFIDENCE: float = 0.7  # Default confidence threshold
+    SUPPORTED_LANGUAGES = {"ru", "en"}  # Only Russian and English supported
 
     def __init__(
         self,
-        model_type: Literal["4lang", "95lang"] = "95lang",
+        model_name: str = "speechbrain/lang-id-voxlingua107-ecapa",
         device: str | None = None,
         confidence_threshold: float = 0.7,
+        default_language: Literal["ru", "en"] = "ru",
     ):
-        """Initialize Silero Language ID model.
+        """Initialize SpeechBrain Language ID model.
 
         Args:
-            model_type: Model variant (only '95lang' is supported, '4lang' will use 95lang)
+            model_name: HuggingFace model name
             device: Device to run on ('cpu', 'cuda', or None for auto)
             confidence_threshold: Minimum confidence for language detection
+            default_language: Default language when confidence < threshold or unsupported
         """
-        self.model_type = "95lang"  # Only 95lang available
+        self.model_name = model_name
         self.confidence_threshold = confidence_threshold
+        self.default_language = default_language
 
         # Determine device
         if device is None:
@@ -52,50 +56,36 @@ class SileroLanguageID:
         else:
             self.device = torch.device(device)
 
-        logger.info(f"Initializing Silero Language ID (95lang) on {self.device}")
+        logger.info(f"Initializing SpeechBrain Language ID on {self.device}")
+        logger.info(f"Supported languages: {self.SUPPORTED_LANGUAGES} (others will trigger warnings)")
 
         try:
-            # Load Silero Language Classifier from silero-vad repo
-            # Returns: (model, lang_dict, lang_group_dict, utils)
-            model, lang_dict, lang_group_dict, utils = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_lang_detector_95',
-                force_reload=False,
-                onnx=False,
+            from speechbrain.inference.classifiers import EncoderClassifier
+
+            # Load model from HuggingFace
+            cache_dir = Path.home() / '.cache' / 'speechbrain'
+            cache_dir.mkdir(parents=True, exist_ok=True)
+
+            self.classifier = EncoderClassifier.from_hparams(
+                source=model_name,
+                savedir=str(cache_dir / "lang-id-voxlingua107-ecapa"),
+                run_opts={"device": str(self.device)},
             )
 
-            # Extract utils
-            self.get_language_and_group, self.read_audio = utils
-
-            # Move model to device
-            self.model = model.to(self.device)
-            self.model.eval()
-
-            # Store language dictionaries
-            self.lang_dict = lang_dict
-            self.lang_group_dict = lang_group_dict
-
-            # Map language names to codes for common languages
-            # Silero returns full names like "Russian", "English"
-            self.lang_name_to_code = {
-                "Russian": "ru",
-                "English": "en",
-                "German": "de",
-                "Spanish": "es",
-                "French": "fr",
-                "Italian": "it",
-                "Portuguese": "pt",
-                "Polish": "pl",
-                "Ukrainian": "uk",
+            # Language code mapping (VoxLingua107 uses ISO 639-3 codes)
+            # Map from VoxLingua codes to our 2-letter codes
+            self.lang_code_map = {
+                "rus": "ru",  # Russian
+                "eng": "en",  # English
             }
 
             logger.success(
-                f"Silero Language ID loaded successfully. "
-                f"Supports 95 languages"
+                f"SpeechBrain Language ID loaded successfully "
+                f"(VoxLingua107 ECAPA-TDNN, {len(self.SUPPORTED_LANGUAGES)} languages supported)"
             )
 
         except Exception as e:
-            logger.error(f"Failed to load Silero Language ID: {e}")
+            logger.error(f"Failed to load SpeechBrain Language ID: {e}")
             raise
 
     def detect(
@@ -109,7 +99,12 @@ class SileroLanguageID:
 
         Returns:
             Tuple of (language_code, confidence)
-            Example: ("ru", 0.95)
+            - language_code: "ru", "en", or "unknown"
+            - confidence: float in [0, 1]
+
+        Note:
+            If detected language is not in SUPPORTED_LANGUAGES (ru/en),
+            a warning is logged and default_language is returned with low confidence.
         """
         if len(audio) == 0:
             logger.warning("Empty audio provided to LID")
@@ -126,37 +121,41 @@ class SileroLanguageID:
             audio = audio / max_val
 
         try:
-            # Convert numpy array to torch tensor
-            audio_tensor = torch.from_numpy(audio).to(self.device)
+            # Convert to torch tensor (SpeechBrain expects [batch, time])
+            audio_tensor = torch.from_numpy(audio).unsqueeze(0).to(self.device)
 
-            # Run detection using Silero LID API
+            # Run classification
             with torch.no_grad():
-                languages, language_groups = self.get_language_and_group(
-                    audio_tensor,
-                    self.model,
-                    self.lang_dict,
-                    self.lang_group_dict,
-                    top_n=1  # Get top 1 prediction
+                prediction = self.classifier.classify_batch(audio_tensor)
+
+            # Extract results
+            # prediction is a tuple: (output_probs, scores, index, text_lab)
+            text_lab = prediction[3][0]  # Language code (e.g., "rus", "eng")
+            scores = prediction[1].squeeze()  # Confidence scores
+
+            # Get confidence for the predicted language
+            pred_idx = prediction[2].item()
+            confidence = torch.softmax(scores, dim=0)[pred_idx].item()
+
+            # Map VoxLingua code to our 2-letter code
+            lang_code = self.lang_code_map.get(text_lab, text_lab[:2] if len(text_lab) >= 2 else text_lab)
+
+            # Check if language is supported
+            if lang_code not in self.SUPPORTED_LANGUAGES:
+                logger.warning(
+                    f"⚠️  Detected unsupported language: {text_lab} ({lang_code}) "
+                    f"with confidence {confidence:.3f}. "
+                    f"Only {self.SUPPORTED_LANGUAGES} are supported. "
+                    f"Routing to default: {self.default_language}"
                 )
+                return (self.default_language, 0.5)  # Medium confidence for fallback
 
-            # Extract top language
-            if languages and len(languages) > 0:
-                lang_info = languages[0]  # Top prediction
-                lang_name = lang_info[0]  # Language name (e.g., "Russian")
-                confidence = lang_info[1]  # Confidence score
+            logger.debug(
+                f"Language detection: {text_lab} → {lang_code} "
+                f"(confidence: {confidence:.3f})"
+            )
 
-                # Convert language name to code
-                lang_code = self.lang_name_to_code.get(lang_name, lang_name.lower()[:2])
-
-                logger.debug(
-                    f"Language detection: {lang_name} ({lang_code}) "
-                    f"(confidence: {confidence:.3f})"
-                )
-
-                return (lang_code, float(confidence))
-            else:
-                logger.warning("No language detected from audio")
-                return ("unknown", 0.0)
+            return (lang_code, float(confidence))
 
         except Exception as e:
             logger.error(f"Language detection failed: {e}")
@@ -184,15 +183,19 @@ class SileroLanguageID:
         if confidence < threshold:
             logger.warning(
                 f"Language detection confidence {confidence:.3f} below "
-                f"threshold {threshold:.3f}, treating as uncertain"
+                f"threshold {threshold:.3f}, using default language: {self.default_language}"
             )
-            return (None, confidence)
+            return (self.default_language, confidence)
 
         return (lang_code, confidence)
 
     def __del__(self):
         """Clean up resources."""
-        if hasattr(self, 'model'):
-            del self.model
+        if hasattr(self, 'classifier'):
+            del self.classifier
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+
+# Backward compatibility alias
+SileroLanguageID = SpeechBrainLanguageID

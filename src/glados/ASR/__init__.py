@@ -5,6 +5,7 @@ from typing import Any, Protocol
 import warnings
 
 from numpy.typing import NDArray
+from loguru import logger
 
 from .mel_spectrogram import MelSpectrogramCalculator
 
@@ -27,8 +28,11 @@ def get_audio_transcriber(
 
     Parameters:
         engine_type (str): The type of ASR engine to use:
-            - "ctc": Connectionist Temporal Classification model (faster, good accuracy)
-            - "tdt": Token and Duration Transducer model (best accuracy, slightly slower)
+            - "gigaam": GigaAM-RU (optimized for Russian with emotion detection)
+            - "tdt": Parakeet-TDT-0.6b-v2 (universal, excellent for both RU and EN)
+            - "ctc": CTC model (faster, good accuracy)
+            - "whisper": Whisper (deprecated, use TDT instead for English)
+        language (str): Language code ('ru' or 'en')
         **kwargs: Additional keyword arguments to pass to the transcriber constructor
 
     Returns:
@@ -41,13 +45,14 @@ def get_audio_transcriber(
 
     requested_engine = engine_type.lower()
 
+    # GigaAM for Russian (best quality for RU)
     if requested_engine == "gigaam" or normalized_language == "ru":
         try:
             from .gigaam_asr import AudioTranscriber as GigaAMTranscriber
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard
             warnings.warn(
                 "GigaAM ASR backend is unavailable because optional dependencies are missing. "
-                "Falling back to the ONNX-based models.",
+                "Falling back to Parakeet-TDT.",
                 stacklevel=2,
             )
         else:
@@ -55,26 +60,31 @@ def get_audio_transcriber(
                 return GigaAMTranscriber(language=normalized_language, **kwargs)
             except RuntimeError as exc:  # pragma: no cover - import guard
                 warnings.warn(
-                    f"Failed to initialize GigaAM ASR backend ({exc}). Falling back to the ONNX-based models.",
+                    f"Failed to initialize GigaAM ASR backend ({exc}). Falling back to Parakeet-TDT.",
                     stacklevel=2,
                 )
 
-        requested_engine = "tdt" if requested_engine == "gigaam" else requested_engine
+        requested_engine = "tdt"  # Fallback to TDT
 
-    # Whisper for English
+    # Whisper (deprecated for English - TDT is faster and better)
     if requested_engine == "whisper":
-        from .whisper_asr import WhisperTranscriber
+        logger.warning(
+            "⚠️  Whisper ASR is deprecated. "
+            "Using Parakeet-TDT instead (faster and more accurate for English)."
+        )
+        requested_engine = "tdt"  # Auto-switch to TDT
 
-        return WhisperTranscriber(**kwargs)
-
-    if requested_engine == "ctc":
-        from .ctc_asr import AudioTranscriber as CTCTranscriber
-
-        return CTCTranscriber()
-    elif requested_engine == "tdt":
+    # Parakeet-TDT (excellent for both RU and EN)
+    if requested_engine == "tdt":
         from .tdt_asr import AudioTranscriber as TDTTranscriber
 
         return TDTTranscriber()
+
+    # CTC (legacy)
+    elif requested_engine == "ctc":
+        from .ctc_asr import AudioTranscriber as CTCTranscriber
+
+        return CTCTranscriber()
     else:
         raise ValueError(f"Unsupported ASR engine type: {engine_type}")
 

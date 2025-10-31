@@ -658,16 +658,18 @@ class Glados:
                     en_tts_model = get_speech_synthesizer(config.voice_en)
 
                 # Load Language ID model
-                logger.info("EN-Branch: Loading Silero Language ID model...")
-                from ..audio_io import SileroLanguageID
+                logger.info("EN-Branch: Loading SpeechBrain Language ID model...")
+                from ..audio_io import SpeechBrainLanguageID
 
                 lid_config = config.language_detection or {}
-                model_type = lid_config.get("model_type", "4lang")
+                model_name = lid_config.get("model_name", "speechbrain/lang-id-voxlingua107-ecapa")
+                default_language = lid_config.get("default_language", "ru")
 
-                lid_model = SileroLanguageID(
-                    model_type=model_type,
+                lid_model = SpeechBrainLanguageID(
+                    model_name=model_name,
                     device=None,  # Auto-detect CUDA
                     confidence_threshold=lid_config.get("confidence_threshold", 0.7),
+                    default_language=default_language,
                 )
 
                 logger.success("EN-Branch: All bilingual models loaded successfully!")

@@ -22,17 +22,17 @@ Glados:
 
   # EN-Branch Integration Configuration
   enable_en_branch: true     # Enable parallel EN pipeline
-  asr_ru_engine: "gigaam"    # Russian ASR (GigaAM-RU - excellent for Russian)
-  asr_en_engine: "whisper"   # English ASR (Whisper-small.en)
+  asr_ru_engine: "gigaam"    # Russian ASR (GigaAM-RU - excellent for Russian + emotion detection)
+  asr_en_engine: "tdt"       # English ASR (Parakeet-TDT-0.6b-v2 - faster and better than Whisper)
   voice_ru: "silero_ru"      # Russian TTS (Silero V5 RU)
   voice_en: "silero_en"      # English TTS (Silero EN)
 
-  # Audio-based Language Detection (Silero LID from silero-vad)
+  # Audio-based Language Detection (SpeechBrain VoxLingua107)
   language_detection:
     enabled: true
     confidence_threshold: 0.7  # Min confidence for LID
-    default_language: "ru"     # Default when confidence < threshold
-    model_type: "95lang"       # Silero LID 95-language model
+    default_language: "ru"     # Default when confidence < threshold or unsupported language
+    model_name: "speechbrain/lang-id-voxlingua107-ecapa"  # HuggingFace model
 
   # Audio Mixer
   audio_mixer:
