@@ -153,7 +153,7 @@ tui:
 #   Microphone → VAD → Diarization → LID (Silero) → Route by Language
 #       ↓                                               ↓
 #   [RU Branch]                                    [EN Branch]
-#   GigaAM-RU ASR                                  Whisper-small.en ASR
+#   GigaAM-RU ASR                                  Parakeet ASR
 #       ↓                                               ↓
 #   Text Normalization                             Text Normalization
 #       ↓                                               ↓
