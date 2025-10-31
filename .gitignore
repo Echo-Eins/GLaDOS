@@ -181,3 +181,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 models/TTS/kokoro-v1.0.fp16.onnx
+src/glados/glados_ui/model.pt
