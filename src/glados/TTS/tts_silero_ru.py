@@ -54,14 +54,25 @@ class SileroRuSynthesizer:
             logger.info("FP16 precision enabled for faster inference")
 
         try:
-            # Load Silero V5 Russian model
-            # Returns: (model, example_text)
-            model, example_text = torch.hub.load(
-                repo_or_dir='snakers4/silero-models',
-                model='silero_tts',
-                language='ru',
-                speaker='v5_ru'
-            )
+            # Load Silero V5 Russian model using direct download
+            # V5 is not available via torch.hub.load, must use PackageImporter
+            import os
+
+            model_url = 'https://models.silero.ai/models/tts/ru/v5_ru.pt'
+            cache_dir = Path.home() / '.cache' / 'torch' / 'silero_tts'
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            local_file = cache_dir / 'v5_ru.pt'
+
+            # Download model if not cached
+            if not local_file.exists():
+                logger.info(f"Downloading Silero V5 Russian model to {local_file}")
+                torch.hub.download_url_to_file(model_url, str(local_file))
+                logger.success("Model downloaded successfully")
+            else:
+                logger.info(f"Using cached Silero V5 model from {local_file}")
+
+            # Load model using PackageImporter
+            model = torch.package.PackageImporter(str(local_file)).load_pickle("tts_models", "model")
 
             # Move model to target device first
             if hasattr(model, "to") and callable(getattr(model, "to")):
