@@ -1,7 +1,7 @@
-"""Silero TTS V5 Russian implementation for GLaDOS.
+"""Silero TTS English implementation for GLaDOS EN-Branch.
 
-This module provides Russian text-to-speech synthesis using Silero V5 models
-with the 'xenia' speaker voice.
+This module provides English text-to-speech synthesis using Silero TTS models
+with various English speaker voices.
 """
 
 import torch
@@ -11,31 +11,33 @@ from loguru import logger
 from pathlib import Path
 from typing import Callable
 
-class SileroRuSynthesizer:
-    """Russian TTS synthesizer using Silero V5 models.
 
-    This synthesizer uses the Silero TTS V5 model with the 'xenia' speaker
-    for high-quality Russian speech synthesis.
+class SileroEnSynthesizer:
+    """English TTS synthesizer using Silero TTS models.
+
+    This synthesizer uses the Silero TTS English models for high-quality
+    English speech synthesis in the EN-Branch pipeline.
     """
 
     def __init__(
         self,
-        speaker: str = "xenia",
+        speaker: str = "en_0",
         sample_rate: int = 48000,
         device: str | None = None,
         use_fp16: bool = True,
     ):
-        """Initialize Silero Russian TTS synthesizer.
+        """Initialize Silero English TTS synthesizer.
 
         Args:
-            speaker: Speaker name (default: 'xenia')
-                Available: 'aidar', 'baya', 'kseniya', 'xenia', 'eugene', 'random'
+            speaker: Speaker name for English voice
+                Available speakers vary by model version
+                Common: 'en_0', 'en_1', 'en_2', etc.
             sample_rate: Audio sample rate (8000, 24000, or 48000)
             device: Device to run model on ('cpu', 'cuda', or None for auto)
             use_fp16: Use FP16 precision on CUDA for faster inference (default: True)
 
         Note:
-            V5 model has improved quality and automatic stress placement (put_accent) built-in.
+            Silero English TTS models support multiple voices and accents.
         """
         self.speaker = speaker
         self.sample_rate = sample_rate
@@ -49,18 +51,18 @@ class SileroRuSynthesizer:
         # FP16 only works on CUDA
         self.use_fp16 = use_fp16 and self.device.type == 'cuda'
 
-        logger.info(f"Initializing Silero Russian TTS on {self.device}")
+        logger.info(f"Initializing Silero English TTS on {self.device}")
         if self.use_fp16:
             logger.info("FP16 precision enabled for faster inference")
 
         try:
-            # Load Silero V5 Russian model
-            # Returns: (model, example_text)
+            # Load Silero English TTS model
+            # Returns: (model, example_text, available_speakers, apply_tts)
             model, example_text = torch.hub.load(
                 repo_or_dir='snakers4/silero-models',
                 model='silero_tts',
-                language='ru',
-                speaker='v5_ru'
+                language='en',
+                speaker='v3_en'
             )
 
             # Move model to target device first
@@ -84,8 +86,8 @@ class SileroRuSynthesizer:
 
                 except Exception as precision_error:
                     logger.warning(
-                    "Failed to convert model to FP16: {}. Falling back to FP32 precision.",
-                    precision_error,
+                        "Failed to convert model to FP16: {}. Falling back to FP32 precision.",
+                        precision_error,
                     )
                     self.use_fp16 = False
                     target_dtype = torch.float32
@@ -114,19 +116,19 @@ class SileroRuSynthesizer:
             self.model = model
 
             logger.success(
-                f"Silero V5 Russian TTS loaded successfully with speaker '{speaker}' "
+                f"Silero English TTS loaded successfully with speaker '{speaker}' "
                 f"on {self.device} (FP16: {self.use_fp16})"
             )
 
         except Exception as e:
-            logger.error(f"Failed to load Silero TTS model: {e}")
+            logger.error(f"Failed to load Silero English TTS model: {e}")
             raise
 
     def generate_speech_audio(self, text: str) -> NDArray[np.float32]:
-        """Generate speech audio from Russian text.
+        """Generate speech audio from English text.
 
         Args:
-            text: Russian text to synthesize
+            text: English text to synthesize
 
         Returns:
             Audio samples as float32 numpy array
@@ -136,11 +138,9 @@ class SileroRuSynthesizer:
             return np.array([], dtype=np.float32)
 
         try:
-            # Generate audio using Silero V5
-            # Note: V5 has automatic stress (put_accent) built-in with improved quality
+            # Generate audio using Silero English TTS
             with torch.no_grad():
                 # Silero models handle FP16 internally if model was converted
-                # Don't use autocast - it can cause issues with custom models
                 audio_tensor = self.model.apply_tts(
                     text=text,
                     speaker=self.speaker,
@@ -160,10 +160,12 @@ class SileroRuSynthesizer:
             # Ensure float32
             audio = audio.astype(np.float32)
 
-            logger.debug(f"Generated {len(audio)/self.sample_rate:.2f}s of audio for text: '{text[:50]}...'")
+            logger.debug(
+                f"Generated {len(audio)/self.sample_rate:.2f}s of audio "
+                f"for text: '{text[:50]}...'"
+            )
 
             # CRITICAL: Clear CUDA cache to prevent memory/cache accumulation
-            # After 15+ TTS generations, accumulated cache can cause audio distortion
             if self.device.type == 'cuda':
                 torch.cuda.empty_cache()
                 logger.debug("Cleared CUDA cache after TTS generation")
@@ -211,7 +213,6 @@ class SileroRuSynthesizer:
             )
 
         # Check if the model has parameters() and buffers() methods
-        # Silero models may not expose these directly
         if not (hasattr(model, 'parameters') and callable(getattr(model, 'parameters'))):
             logger.debug(
                 "Model does not expose parameters() method. "

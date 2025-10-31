@@ -21,12 +21,16 @@ class AudioMessage:
         text: Associated text that was synthesized
         is_eos: Flag indicating end of speech stream
         sequence_num: Sequence number for ordered playback (0 = play immediately)
+        language: Language code of the audio ('ru', 'en', or None for legacy)
+        timestamp: Timestamp for ordering mixed-language playback
     """
 
     audio: NDArray[np.float32]
     text: str
     is_eos: bool = False
     sequence_num: int = 0
+    language: str | None = None
+    timestamp: float | None = None
 
 
 @dataclass

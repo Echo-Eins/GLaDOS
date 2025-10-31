@@ -48,6 +48,16 @@ def get_speech_synthesizer(
 
         return tts_glados_ru.GLaDOSRuSynthesizer()
 
+    if voice.lower() == "silero_ru":
+        from ..TTS import tts_silero_ru
+
+        return tts_silero_ru.SileroRuSynthesizer()
+
+    if voice.lower() == "silero_en":
+        from ..TTS import tts_silero_en
+
+        return tts_silero_en.SileroEnSynthesizer()
+
     from ..TTS import tts_kokoro
 
     available_voices = tts_kokoro.get_voices()

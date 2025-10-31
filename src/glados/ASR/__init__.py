@@ -61,6 +61,12 @@ def get_audio_transcriber(
 
         requested_engine = "tdt" if requested_engine == "gigaam" else requested_engine
 
+    # Whisper for English
+    if requested_engine == "whisper":
+        from .whisper_asr import WhisperTranscriber
+
+        return WhisperTranscriber(**kwargs)
+
     if requested_engine == "ctc":
         from .ctc_asr import AudioTranscriber as CTCTranscriber
 
