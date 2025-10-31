@@ -21,10 +21,10 @@ LanguageCode = Literal["ru", "en", "de", "es"]
 class SileroLanguageID:
     """Silero-based Language Identification for audio segments.
 
-    Uses Silero Language Classifier (4-language or 95-language model)
+    Uses Silero Language Classifier (95-language model)
     to detect the language of speech in audio segments.
 
-    Supported languages (4L model): ru, en, de, es
+    Supported languages: ru, en, de, es, and 91 more
     """
 
     SAMPLE_RATE: int = 16000
@@ -32,18 +32,18 @@ class SileroLanguageID:
 
     def __init__(
         self,
-        model_type: Literal["4lang", "95lang"] = "4lang",
+        model_type: Literal["4lang", "95lang"] = "95lang",
         device: str | None = None,
         confidence_threshold: float = 0.7,
     ):
         """Initialize Silero Language ID model.
 
         Args:
-            model_type: Model variant ('4lang' for ru/en/de/es, '95lang' for more)
+            model_type: Model variant (only '95lang' is supported, '4lang' will use 95lang)
             device: Device to run on ('cpu', 'cuda', or None for auto)
             confidence_threshold: Minimum confidence for language detection
         """
-        self.model_type = model_type
+        self.model_type = "95lang"  # Only 95lang available
         self.confidence_threshold = confidence_threshold
 
         # Determine device
@@ -52,30 +52,46 @@ class SileroLanguageID:
         else:
             self.device = torch.device(device)
 
-        logger.info(f"Initializing Silero Language ID ({model_type}) on {self.device}")
+        logger.info(f"Initializing Silero Language ID (95lang) on {self.device}")
 
         try:
-            # Load Silero Language Classifier
-            # For 4-language model (ru, en, de, es)
-            if model_type == "4lang":
-                self.model, self.languages = torch.hub.load(
-                    repo_or_dir='snakers4/silero-models',
-                    model='silero_lang_detector'
-                )
-            else:
-                # 95-language model
-                self.model, self.languages = torch.hub.load(
-                    repo_or_dir='snakers4/silero-models',
-                    model='silero_lang_detector_95lang'
-                )
+            # Load Silero Language Classifier from silero-vad repo
+            # Returns: (model, lang_dict, lang_group_dict, utils)
+            model, lang_dict, lang_group_dict, utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_lang_detector_95',
+                force_reload=False,
+                onnx=False,
+            )
+
+            # Extract utils
+            self.get_language_and_group, self.read_audio = utils
 
             # Move model to device
-            self.model = self.model.to(self.device)
+            self.model = model.to(self.device)
             self.model.eval()
+
+            # Store language dictionaries
+            self.lang_dict = lang_dict
+            self.lang_group_dict = lang_group_dict
+
+            # Map language names to codes for common languages
+            # Silero returns full names like "Russian", "English"
+            self.lang_name_to_code = {
+                "Russian": "ru",
+                "English": "en",
+                "German": "de",
+                "Spanish": "es",
+                "French": "fr",
+                "Italian": "it",
+                "Portuguese": "pt",
+                "Polish": "pl",
+                "Ukrainian": "uk",
+            }
 
             logger.success(
                 f"Silero Language ID loaded successfully. "
-                f"Supported languages: {self.languages}"
+                f"Supports 95 languages"
             )
 
         except Exception as e:
@@ -110,46 +126,37 @@ class SileroLanguageID:
             audio = audio / max_val
 
         try:
-            # Silero LID expects tensor input
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                temp_path = Path(tmp.name)
+            # Convert numpy array to torch tensor
+            audio_tensor = torch.from_numpy(audio).to(self.device)
 
-            try:
-                # Write to temp file (Silero LID expects file input)
-                sf.write(temp_path, audio, self.SAMPLE_RATE)
+            # Run detection using Silero LID API
+            with torch.no_grad():
+                languages, language_groups = self.get_language_and_group(
+                    audio_tensor,
+                    self.model,
+                    self.lang_dict,
+                    self.lang_group_dict,
+                    top_n=1  # Get top 1 prediction
+                )
 
-                # Run detection
-                with torch.no_grad():
-                    lang_probs = self.model(str(temp_path))
+            # Extract top language
+            if languages and len(languages) > 0:
+                lang_info = languages[0]  # Top prediction
+                lang_name = lang_info[0]  # Language name (e.g., "Russian")
+                confidence = lang_info[1]  # Confidence score
 
-                # Get top prediction
-                if isinstance(lang_probs, dict):
-                    # Model returns dict of {lang: prob}
-                    sorted_langs = sorted(
-                        lang_probs.items(),
-                        key=lambda x: x[1],
-                        reverse=True
-                    )
-                    lang_code, confidence = sorted_langs[0]
-                else:
-                    # Model returns tensor
-                    confidence, lang_idx = torch.max(lang_probs, dim=-1)
-                    confidence = confidence.item()
-                    lang_code = self.languages[lang_idx.item()]
-
-                # Convert to float if needed
-                if isinstance(confidence, torch.Tensor):
-                    confidence = confidence.item()
+                # Convert language name to code
+                lang_code = self.lang_name_to_code.get(lang_name, lang_name.lower()[:2])
 
                 logger.debug(
-                    f"Language detection: {lang_code} (confidence: {confidence:.3f})"
+                    f"Language detection: {lang_name} ({lang_code}) "
+                    f"(confidence: {confidence:.3f})"
                 )
 
                 return (lang_code, float(confidence))
-
-            finally:
-                # Clean up temp file
-                temp_path.unlink(missing_ok=True)
+            else:
+                logger.warning("No language detected from audio")
+                return ("unknown", 0.0)
 
         except Exception as e:
             logger.error(f"Language detection failed: {e}")

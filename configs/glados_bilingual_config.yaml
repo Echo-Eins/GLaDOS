@@ -16,23 +16,23 @@ Glados:
   audio_io: "sounddevice"
 
   # Legacy fields (required for backward compatibility)
-  asr_engine: "tdt"      # Main ASR engine (Russian)
+  asr_engine: "gigaam"   # Main ASR engine (GigaAM-RU for Russian)
   voice: "glados_ru"     # Main voice (Russian GLaDOS with full audio pipeline)
   language: "ru"         # Main language
 
-  # EN-Branch Integration Configuration (for future integration)
-  enable_en_branch: true  # Enable parallel EN pipeline
-  asr_ru_engine: "tdt"    # Russian ASR (GigaAM-RU)
-  asr_en_engine: "whisper"  # English ASR (Whisper-small.en)
-  voice_ru: "silero_ru"  # Russian TTS (Silero V5 RU)
-  voice_en: "silero_en"  # English TTS (Silero EN)
+  # EN-Branch Integration Configuration
+  enable_en_branch: true     # Enable parallel EN pipeline
+  asr_ru_engine: "gigaam"    # Russian ASR (GigaAM-RU - excellent for Russian)
+  asr_en_engine: "whisper"   # English ASR (Whisper-small.en)
+  voice_ru: "silero_ru"      # Russian TTS (Silero V5 RU)
+  voice_en: "silero_en"      # English TTS (Silero EN)
 
-  # Language Detection
+  # Audio-based Language Detection (Silero LID from silero-vad)
   language_detection:
     enabled: true
     confidence_threshold: 0.7  # Min confidence for LID
     default_language: "ru"     # Default when confidence < threshold
-    model_type: "4lang"        # Silero LID model (4lang or 95lang)
+    model_type: "95lang"       # Silero LID 95-language model
 
   # Audio Mixer
   audio_mixer:
