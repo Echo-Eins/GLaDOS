@@ -88,6 +88,15 @@ class GladosConfig(BaseModel):
     announcement: str | None
     personality_preprompt: list[PersonalityPrompt]
 
+    # EN-Branch Integration (optional fields for bilingual mode)
+    enable_en_branch: bool = False  # Enable parallel EN pipeline
+    asr_ru_engine: str | None = None  # Russian ASR engine
+    asr_en_engine: str | None = None  # English ASR engine
+    voice_ru: str | None = None  # Russian TTS voice
+    voice_en: str | None = None  # English TTS voice
+    language_detection: dict | None = None  # Language detection settings
+    audio_mixer: dict | None = None  # Audio mixer settings
+
     @classmethod
     def from_yaml(cls, path: str | Path, key_to_config: tuple[str, ...] = ("Glados",)) -> "GladosConfig":
         """
@@ -162,6 +171,15 @@ class Glados:
         wake_word: str | None = None,
         announcement: str | None = None,
         personality_preprompt: tuple[dict[str, str], ...] = DEFAULT_PERSONALITY_PREPROMPT,
+        # EN-Branch parameters (bilingual mode)
+        enable_en_branch: bool = False,
+        ru_asr_model: TranscriberProtocol | None = None,
+        en_asr_model: TranscriberProtocol | None = None,
+        ru_tts_model: SpeechSynthesizerProtocol | None = None,
+        en_tts_model: SpeechSynthesizerProtocol | None = None,
+        lid_model: "object | None" = None,  # SileroLanguageID
+        language_detection_config: dict | None = None,
+        audio_mixer_config: dict | None = None,
     ) -> None:
         """
         Initialize the Glados voice assistant with configuration parameters.
@@ -171,9 +189,11 @@ class Glados:
         The initialization configures various components and starts background threads for
         processing LLM responses and TTS output.
 
+        Supports both monolingual (legacy) and bilingual (EN-Branch) modes.
+
         Args:
-            asr_model (TranscriberProtocol): The ASR model for transcribing audio input.
-            tts_model (SpeechSynthesizerProtocol): The TTS model for synthesizing spoken output.
+            asr_model (TranscriberProtocol): The ASR model for transcribing audio input (legacy/main).
+            tts_model (SpeechSynthesizerProtocol): The TTS model for synthesizing spoken output (legacy/main).
             audio_io (AudioProtocol): The audio input/output system to use.
             completion_url (HttpUrl): The URL for the LLM completion endpoint.
             llm_model (str): The name of the LLM model to use.
@@ -186,6 +206,14 @@ class Glados:
             wake_word (str | None): Optional wake word to trigger the assistant.
             announcement (str | None): Optional announcement to play on startup.
             personality_preprompt (tuple[dict[str, str], ...]): Initial personality preprompt messages.
+            enable_en_branch (bool): Enable parallel EN pipeline for bilingual mode.
+            ru_asr_model (TranscriberProtocol | None): Russian ASR model (bilingual mode).
+            en_asr_model (TranscriberProtocol | None): English ASR model (bilingual mode).
+            ru_tts_model (SpeechSynthesizerProtocol | None): Russian TTS model (bilingual mode).
+            en_tts_model (SpeechSynthesizerProtocol | None): English TTS model (bilingual mode).
+            lid_model (object | None): Language ID model (Silero LID).
+            language_detection_config (dict | None): Language detection configuration.
+            audio_mixer_config (dict | None): Audio mixer configuration.
         """
         self._asr_model = asr_model
         self._tts = tts_model
@@ -276,12 +304,103 @@ class Glados:
             pause_time=self.PAUSE_TIME,
         )
 
+        # Initialize EN-Branch components (bilingual mode)
+        self.enable_en_branch = enable_en_branch
+        self.language_router = None
+        self.ru_branch_processor = None
+        self.en_branch_processor = None
+        self.audio_mixer = None
+
+        if self.enable_en_branch:
+            logger.info("EN-Branch: Initializing bilingual mode components...")
+
+            # Validate required models
+            if not all([ru_asr_model, en_asr_model, ru_tts_model, en_tts_model, lid_model]):
+                logger.warning(
+                    "EN-Branch: Missing required models for bilingual mode. "
+                    "Falling back to monolingual mode."
+                )
+                self.enable_en_branch = False
+            else:
+                try:
+                    # Import EN-Branch modules
+                    from .language_router import LanguageRouter
+                    from .branch_processor import create_branch_processors
+                    from .audio_mixer import AudioMixer
+
+                    # Create language-specific queues
+                    self.ru_segments_queue: queue.Queue = queue.Queue()
+                    self.en_segments_queue: queue.Queue = queue.Queue()
+                    self.mixer_output_queue: queue.Queue = queue.Queue()
+
+                    # Get language detection config
+                    lid_config = language_detection_config or {}
+                    confidence_threshold = lid_config.get("confidence_threshold", 0.7)
+                    default_language = lid_config.get("default_language", "ru")
+
+                    # Create Language Router
+                    logger.info("EN-Branch: Creating Language Router...")
+                    self.language_router = LanguageRouter(
+                        lid_model=lid_model,
+                        ru_queue=self.ru_segments_queue,
+                        en_queue=self.en_segments_queue,
+                        confidence_threshold=confidence_threshold,
+                        default_language=default_language,
+                        shutdown_event=self.shutdown_event,
+                    )
+
+                    # Create Branch Processors
+                    logger.info("EN-Branch: Creating RU and EN Branch Processors...")
+                    self.ru_branch_processor, self.en_branch_processor = create_branch_processors(
+                        ru_input_queue=self.ru_segments_queue,
+                        en_input_queue=self.en_segments_queue,
+                        output_queue=self.mixer_output_queue,
+                        ru_asr_model=ru_asr_model,
+                        en_asr_model=en_asr_model,
+                        ru_tts_model=ru_tts_model,
+                        en_tts_model=en_tts_model,
+                        stc_instance=self._stc,
+                        shutdown_event=self.shutdown_event,
+                        pause_time=self.PAUSE_TIME,
+                    )
+
+                    # Create Audio Mixer
+                    logger.info("EN-Branch: Creating Audio Mixer...")
+                    mixer_config = audio_mixer_config or {}
+                    target_sample_rate = mixer_config.get("target_sample_rate", 48000)
+
+                    self.audio_mixer = AudioMixer(
+                        input_queue=self.mixer_output_queue,
+                        output_queue=self.audio_queue,
+                        target_sample_rate=target_sample_rate,
+                        shutdown_event=self.shutdown_event,
+                        pause_time=self.PAUSE_TIME,
+                    )
+
+                    logger.success("EN-Branch: Bilingual mode components initialized successfully!")
+
+                except Exception as e:
+                    logger.error(f"EN-Branch: Failed to initialize bilingual components: {e}")
+                    logger.exception(e)
+                    logger.warning("EN-Branch: Falling back to monolingual mode.")
+                    self.enable_en_branch = False
+
+        # Build thread targets dictionary
         thread_targets = {
             "SpeechListener": self.speech_listener.run,
             "LLMProcessor": self.llm_processor.run,
             "TTSSynthesizer": self.tts_synthesizer.run,
             "AudioPlayer": self.speech_player.run,
         }
+
+        # Add EN-Branch threads if enabled
+        if self.enable_en_branch and self.ru_branch_processor and self.en_branch_processor and self.audio_mixer:
+            thread_targets.update({
+                "RU_BranchProcessor": self.ru_branch_processor.run,
+                "EN_BranchProcessor": self.en_branch_processor.run,
+                "AudioMixer": self.audio_mixer.run,
+            })
+            logger.info("EN-Branch: Added bilingual processing threads to orchestrator.")
 
         for name, target_func in thread_targets.items():
             thread = threading.Thread(target=target_func, name=name, daemon=True)
@@ -481,6 +600,8 @@ class Glados:
         """
         Create a Glados instance from a GladosConfig configuration object.
 
+        Supports both monolingual (legacy) and bilingual (EN-Branch) configurations.
+
         Parameters:
             config (GladosConfig): Configuration object containing Glados initialization parameters
 
@@ -488,6 +609,7 @@ class Glados:
             Glados: A new Glados instance configured with the provided settings
         """
 
+        # Legacy/main models (always required)
         asr_model = get_audio_transcriber(
             engine_type=config.asr_engine,
             language=config.language,
@@ -497,6 +619,64 @@ class Glados:
         tts_model = get_speech_synthesizer(config.voice)
 
         audio_io = get_audio_system(backend_type=config.audio_io)
+
+        # EN-Branch models (optional, only if enabled)
+        ru_asr_model = None
+        en_asr_model = None
+        ru_tts_model = None
+        en_tts_model = None
+        lid_model = None
+
+        if config.enable_en_branch:
+            logger.info("EN-Branch: Loading bilingual mode models from configuration...")
+
+            try:
+                # Load Russian ASR
+                if config.asr_ru_engine:
+                    logger.info(f"EN-Branch: Loading Russian ASR engine: {config.asr_ru_engine}")
+                    ru_asr_model = get_audio_transcriber(
+                        engine_type=config.asr_ru_engine,
+                        language="ru",
+                    )
+
+                # Load English ASR
+                if config.asr_en_engine:
+                    logger.info(f"EN-Branch: Loading English ASR engine: {config.asr_en_engine}")
+                    en_asr_model = get_audio_transcriber(
+                        engine_type=config.asr_en_engine,
+                        language="en",
+                    )
+
+                # Load Russian TTS
+                if config.voice_ru:
+                    logger.info(f"EN-Branch: Loading Russian TTS voice: {config.voice_ru}")
+                    ru_tts_model = get_speech_synthesizer(config.voice_ru)
+
+                # Load English TTS
+                if config.voice_en:
+                    logger.info(f"EN-Branch: Loading English TTS voice: {config.voice_en}")
+                    en_tts_model = get_speech_synthesizer(config.voice_en)
+
+                # Load Language ID model
+                logger.info("EN-Branch: Loading Silero Language ID model...")
+                from ..audio_io import SileroLanguageID
+
+                lid_config = config.language_detection or {}
+                model_type = lid_config.get("model_type", "4lang")
+
+                lid_model = SileroLanguageID(
+                    model_type=model_type,
+                    device=None,  # Auto-detect CUDA
+                    confidence_threshold=lid_config.get("confidence_threshold", 0.7),
+                )
+
+                logger.success("EN-Branch: All bilingual models loaded successfully!")
+
+            except Exception as e:
+                logger.error(f"EN-Branch: Failed to load bilingual models: {e}")
+                logger.exception(e)
+                logger.warning("EN-Branch: Will attempt to start in monolingual mode.")
+                config.enable_en_branch = False
 
         return cls(
             asr_model=asr_model,
@@ -513,6 +693,15 @@ class Glados:
             wake_word=config.wake_word,
             announcement=config.announcement,
             personality_preprompt=tuple(config.to_chat_messages()),
+            # EN-Branch parameters
+            enable_en_branch=config.enable_en_branch,
+            ru_asr_model=ru_asr_model,
+            en_asr_model=en_asr_model,
+            ru_tts_model=ru_tts_model,
+            en_tts_model=en_tts_model,
+            lid_model=lid_model,
+            language_detection_config=config.language_detection,
+            audio_mixer_config=config.audio_mixer,
         )
 
     @classmethod
