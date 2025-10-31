@@ -321,6 +321,7 @@ class Glados:
                     "Falling back to monolingual mode."
                 )
                 self.enable_en_branch = False
+                self.speech_listener.set_language_router(None)
             else:
                 try:
                     # Import EN-Branch modules
@@ -348,6 +349,9 @@ class Glados:
                         default_language=default_language,
                         shutdown_event=self.shutdown_event,
                     )
+
+                    # Connect speech listener to bilingual router so it can dispatch audio segments
+                    self.speech_listener.set_language_router(self.language_router)
 
                     # Create Branch Processors
                     logger.info("EN-Branch: Creating RU and EN Branch Processors...")
@@ -384,6 +388,8 @@ class Glados:
                     logger.exception(e)
                     logger.warning("EN-Branch: Falling back to monolingual mode.")
                     self.enable_en_branch = False
+                    self.language_router = None
+                    self.speech_listener.set_language_router(None)
 
         # Build thread targets dictionary
         thread_targets = {

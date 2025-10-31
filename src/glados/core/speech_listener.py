@@ -11,6 +11,8 @@ import queue
 import threading
 import time
 
+from typing import TYPE_CHECKING
+
 from Levenshtein import distance
 from loguru import logger
 import numpy as np
@@ -19,7 +21,10 @@ from numpy.typing import NDArray
 from ..ASR import TranscriberProtocol
 from ..audio_io import AudioProtocol
 from .audio_data import RecognitionResult
+from .language_router import LanguageSegment
 
+if TYPE_CHECKING:
+    from .language_router import LanguageRouter
 
 def sanitize_emotions(emotions: dict[str, float] | None) -> dict[str, float] | None:
     """Sanitize emotion dictionary by replacing NaN/inf values with 0.0.
@@ -78,6 +83,7 @@ class SpeechListener:
         wake_word: str | None,
         pause_time: float,
         interruptible: bool = True,
+        language_router: "LanguageRouter | None" = None,
     ) -> None:
         """
         Initializes the SpeechListener with audio I/O, inter-thread communication, and ASR model.
@@ -98,6 +104,7 @@ class SpeechListener:
         self.wake_word = wake_word.lower() if wake_word else None
         self.pause_time = pause_time
         self.interruptible = interruptible
+        self.language_router = language_router
 
         ## Circular buffer to hold pre-activation samples
         #self._buffer: deque[NDArray[np.float32]] = deque(maxlen=self.BUFFER_SIZE // self.VAD_SIZE)
@@ -119,10 +126,22 @@ class SpeechListener:
         # Echo suppression: track when assistant stopped speaking
         self._last_speaking_end_time: float = 0.0
         self._was_speaking: bool = False
+        self._segment_start_time: float | None = None
 
+        # Capture input sample rate if audio_io exposes it
+        self.input_sample_rate = getattr(
+            self.audio_io,
+            "SAMPLE_RATE",
+            getattr(self.audio_io, "sample_rate", 16000),
+        )
         self.shutdown_event = shutdown_event
         self.currently_speaking_event = currently_speaking_event
         self.processing_active_event = processing_active_event
+
+    def set_language_router(self, language_router: "LanguageRouter | None") -> None:
+        """Attach or detach the language router used for bilingual routing."""
+
+        self.language_router = language_router
 
     def run(self) -> None:
         """
@@ -231,6 +250,7 @@ class SpeechListener:
             self._speaking_flags = [speaking for _, _, speaking in self._buffer]
 
             self._recording_started = True
+            self._segment_start_time = time.time()
         else:
             # No voice activity detected → just add to buffer and continue
             self._buffer.append((sample, vad_confidence, is_currently_speaking))
@@ -305,6 +325,7 @@ class SpeechListener:
 
         self._gap_counter = 0
         self._buffer.clear()
+        self._segment_start_time = None
 
         # CRITICAL: Clear the sample queue to remove samples accumulated during playback
         # During long GLaDOS responses, microphone continues capturing and queue fills with echo
@@ -341,7 +362,8 @@ class SpeechListener:
             return
 
         audio = np.concatenate(self._samples)
-        duration_s = len(audio) / 16000
+        duration_s = len(audio) / float(self.input_sample_rate)
+        segment_timestamp = self._segment_start_time or time.time()
         logger.info(f"Processing {duration_s:.2f}s audio with {len(self._samples)} samples")
 
         # Echo detection: Discard segments where all voiced frames were captured while assistant was speaking
@@ -377,6 +399,12 @@ class SpeechListener:
 
         recognition = self.asr(self._samples)
 
+        # Attach audio buffer metadata for downstream consumers
+        recognition.audio = audio
+        recognition.timestamp = segment_timestamp
+        recognition.duration = duration_s
+        recognition.sample_rate = self.input_sample_rate
+
         if recognition.text:
             logger.success(f"ASR: '{recognition.text}'")
             if recognition.emotions:
@@ -391,6 +419,27 @@ class SpeechListener:
                 self.processing_active_event.set()
         else:
             logger.warning("ASR returned empty transcription")
+
+        if self.language_router is not None:
+            segment = LanguageSegment(
+                audio=audio,
+                timestamp=segment_timestamp,
+                duration=duration_s,
+                transcript=recognition.text or None,
+                emotions=recognition.emotions,
+                sample_rate=self.input_sample_rate,
+            )
+            try:
+                routed_segment = self.language_router.route_segment(segment)
+                routed_duration = routed_segment.duration or duration_s
+                routed_language = routed_segment.language or "unknown"
+                logger.info(
+                    f"Bilingual routing: dispatched {routed_duration:.2f}s segment "
+                    f"to {routed_language.upper()} branch (confidence {routed_segment.confidence:.3f})"
+                )
+            except Exception as exc:
+                logger.error(f"Failed to route segment to bilingual pipeline: {exc}")
+                logger.exception(exc)
 
         self.reset()
 

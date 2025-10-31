@@ -47,10 +47,14 @@ class AudioInputMessage:
 
 @dataclass
 class RecognitionResult:
-    """Speech recognition outcome including optional emotion probabilities."""
+    """Speech recognition outcome including optional metadata."""
 
     text: str
     emotions: Mapping[str, float] | None = None
+    audio: NDArray[np.float32] | None = None
+    timestamp: float | None = None
+    duration: float | None = None
+    sample_rate: int | None = None
 
 
 @dataclass

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import queue
 import threading
 import time
-from typing import Literal
+from typing import Literal, Mapping
 
 import numpy as np
 from numpy.typing import NDArray
@@ -31,11 +31,14 @@ class LanguageSegment:
         speaker_id: Optional speaker ID from diarization
     """
     audio: NDArray[np.float32]
-    language: Literal["ru", "en"] | None
-    confidence: float
-    timestamp: float
+    language: Literal["ru", "en"] | None = None
+    confidence: float = 0.0
+    timestamp: float | None = None
     speaker_id: str | None = None
-
+    sample_rate: int = 16000
+    duration: float | None = None
+    transcript: str | None = None
+    emotions: Mapping[str, float] | None = None
 
 class LanguageRouter:
     """Routes audio segments to language-specific processing queues.
@@ -78,8 +81,8 @@ class LanguageRouter:
 
     def route_segment(
         self,
-        audio: NDArray[np.float32],
-        timestamp: float,
+        segment_or_audio: LanguageSegment | NDArray[np.float32],
+        timestamp: float | None = None,
         speaker_id: str | None = None,
     ) -> LanguageSegment:
         """Route a single audio segment to appropriate queue.
@@ -92,6 +95,33 @@ class LanguageRouter:
         Returns:
             LanguageSegment with routing information
         """
+
+        # Prepare segment and audio buffer
+        if isinstance(segment_or_audio, LanguageSegment):
+            segment = segment_or_audio
+            audio = segment.audio
+            if segment.timestamp is None:
+                segment.timestamp = timestamp or time.time()
+            if speaker_id is not None and segment.speaker_id is None:
+                segment.speaker_id = speaker_id
+        else:
+            audio = segment_or_audio
+            segment = LanguageSegment(
+                audio=audio,
+                timestamp=timestamp or time.time(),
+                speaker_id=speaker_id,
+            )
+
+        if audio is None or len(audio) == 0:
+            raise ValueError("LanguageRouter.route_segment received empty audio buffer")
+
+        if segment.duration is None:
+            sample_rate = segment.sample_rate or 16000
+            try:
+                segment.duration = len(audio) / float(sample_rate)
+            except ZeroDivisionError:
+                segment.duration = None
+
         # Detect language
         lang_code, confidence = self.lid_model.detect(audio)
 
@@ -113,13 +143,8 @@ class LanguageRouter:
             lang_code = self.default_language
 
         # Create segment
-        segment = LanguageSegment(
-            audio=audio,
-            language=lang_code,
-            confidence=confidence,
-            timestamp=timestamp,
-            speaker_id=speaker_id,
-        )
+        segment.language = lang_code
+        segment.confidence = confidence
 
         # Route to appropriate queue
         if lang_code == "ru":
