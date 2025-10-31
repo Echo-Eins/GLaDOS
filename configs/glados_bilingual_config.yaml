@@ -39,7 +39,7 @@ Glados:
     crossfade_ms: 40           # Crossfade duration
     target_sample_rate: 48000  # Output sample rate
   wake_word: null
-  announcement: "Neural network modules operational. Bilingual system ready."
+  announcement: "Модули нейронной сети активированы. Билингвальная система готова."
 
   personality_preprompt:
     - system: |-

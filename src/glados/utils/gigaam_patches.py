@@ -42,6 +42,8 @@ def _patch_torch_load() -> None:
         def safe_torch_load(f: Any, map_location: Any = None, **load_kwargs: Any) -> Any:
             # Use weights_only=False for backward compatibility with gigaam models
             # but suppress the FutureWarning
+            # Remove weights_only from load_kwargs to avoid duplicate argument error
+            load_kwargs.pop('weights_only', None)
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=FutureWarning, message=".*torch.load.*")
                 return original_torch_load(f, map_location=map_location, weights_only=False, **load_kwargs)
