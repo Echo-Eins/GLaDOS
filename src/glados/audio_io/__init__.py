@@ -19,7 +19,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .vad import VAD
-from .language_id import SileroLanguageID
+from .language_id import SileroLanguageID, SpeechBrainLanguageID
+from .diarization import NVIDIASpeakerDiarizer
 
 
 class AudioProtocol(Protocol):
@@ -68,6 +69,8 @@ def get_audio_system(backend_type: str = "sounddevice", vad_threshold: float | N
 __all__ = [
     "VAD",
     "SileroLanguageID",
+    "SpeechBrainLanguageID",
+    "NVIDIASpeakerDiarizer",
     "AudioProtocol",
     "get_audio_system",
 ]
