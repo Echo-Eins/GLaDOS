@@ -16,7 +16,7 @@ Glados:
     - "в чём разница"
     - "докажи"
     - "обоснуй"
-  thinking_fuzzy_threshold: 0.75  # Fuzzy matching threshold (0.0-1.0)
+  thinking_fuzzy_threshold: 0.8 # Fuzzy matching threshold (0.0-1.0)
   interruptible: true
   audio_io: "sounddevice"
   asr_engine: "tdt"
@@ -159,6 +159,11 @@ Glados:
 # 2. Запустить GLaDOS
 #   uv run glados start --config configs/glados_ru_config.yaml
 #
+# Билингвальный режим
+#   uv run glados start --config configs/glados_bilingual_config.yaml
+# TUI режим
+#   uv run glados tui --config configs/glados_bilingual_config.yaml
+
 # Запустите CUDA installation script
 #       .\scripts\install_cuda.ps1
 #   Что делает скрипт:
@@ -195,7 +200,7 @@ Glados:
 #
 #       INFO: Initializing RVC processor...
 #       INFO: PyTorch CUDA available: True
-#       INFO: CUDA device: NVIDIA GeForce RTX 3080
+#       INFO: CUDA device: NVIDIA GeForce RTX 3080 ti
 #       SUCCESS: inferrvc initialized successfully
 #       INFO: Using FP16 precision on cuda:0
 
