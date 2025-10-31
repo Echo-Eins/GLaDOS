@@ -11,10 +11,15 @@ def test_config_parsing():
     print("Configuration Parsing Test")
     print("=" * 60 + "\n")
 
-    config_path = Path("/home/user/GLaDOS/configs/glados_bilingual_config.yaml")
+    # Use relative path from test directory
+    test_dir = Path(__file__).parent
+    project_root = test_dir.parent
+    config_path = project_root / "configs" / "glados_bilingual_config.yaml"
 
     if not config_path.exists():
         print(f"❌ Config file not found: {config_path}")
+        print(f"   Test directory: {test_dir}")
+        print(f"   Project root: {project_root}")
         return False
 
     print(f"✅ Config file exists: {config_path}")

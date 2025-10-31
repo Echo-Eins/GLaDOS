@@ -17,7 +17,9 @@ def test_monolingual_mode():
         from glados.core.engine import GladosConfig
 
         # Load RU config
-        config_path = Path("/home/user/GLaDOS/configs/glados_ru_config.yaml")
+        test_dir = Path(__file__).parent
+        project_root = test_dir.parent
+        config_path = project_root / "configs" / "glados_ru_config.yaml"
 
         if not config_path.exists():
             print(f"⚠️  Config file not found: {config_path}")
@@ -77,7 +79,9 @@ def test_bilingual_mode_config_only():
     try:
         from glados.core.engine import GladosConfig
 
-        config_path = Path("/home/user/GLaDOS/configs/glados_bilingual_config.yaml")
+        test_dir = Path(__file__).parent
+        project_root = test_dir.parent
+        config_path = project_root / "configs" / "glados_bilingual_config.yaml"
 
         if not config_path.exists():
             print(f"⚠️  Config file not found: {config_path}")
@@ -134,7 +138,9 @@ def test_bilingual_mode_initialization():
     try:
         from glados.core.engine import GladosConfig, Glados
 
-        config_path = Path("/home/user/GLaDOS/configs/glados_bilingual_config.yaml")
+        test_dir = Path(__file__).parent
+        project_root = test_dir.parent
+        config_path = project_root / "configs" / "glados_bilingual_config.yaml"
 
         if not config_path.exists():
             print(f"⚠️  Config file not found: {config_path}")

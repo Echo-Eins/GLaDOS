@@ -32,7 +32,10 @@ def quick_test():
 
     # Step 2: Check config file exists
     print("\nStep 2: Checking configuration file...")
-    config_path = Path("/home/user/GLaDOS/configs/glados_bilingual_config.yaml")
+    test_dir = Path(__file__).parent
+    project_root = test_dir.parent
+    config_path = project_root / "configs" / "glados_bilingual_config.yaml"
+
     if not config_path.exists():
         print(f"❌ Config file not found: {config_path}")
         return False
