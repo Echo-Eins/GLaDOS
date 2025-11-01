@@ -72,6 +72,16 @@ class SpeechBrainLanguageID:
                 run_opts={"device": str(self.device)},
             )
 
+            # Configure label encoder to the expected number of categories
+            label_encoder = getattr(self.classifier.hparams, "label_encoder", None)
+            if label_encoder is not None and hasattr(label_encoder, "expect_len"):
+                try:
+                    label_encoder.expect_len(107)
+                except Exception as enc_exc:  # pragma: no cover - defensive logging
+                    logger.debug(
+                        "Unable to set label encoder expected length: %s", enc_exc
+                    )
+
             # Language code mapping (VoxLingua107 uses ISO 639-3 codes)
             # Map from VoxLingua codes to our 2-letter codes
             self.lang_code_map = {
@@ -128,17 +138,66 @@ class SpeechBrainLanguageID:
             with torch.no_grad():
                 prediction = self.classifier.classify_batch(audio_tensor)
 
-            # Extract results
-            # prediction is a tuple: (output_probs, scores, index, text_lab)
-            text_lab = prediction[3][0]  # Language code (e.g., "rus", "eng")
-            scores = prediction[1].squeeze()  # Confidence scores
+            # Extract outputs from SpeechBrain tuple: (log_posteriors, max_score, index, text_lab)
+            log_posteriors, _, indices, labels = prediction
 
-            # Get confidence for the predicted language
-            pred_idx = prediction[2].item()
-            confidence = torch.softmax(scores, dim=0)[pred_idx].item()
+            # Derive textual label
+            if isinstance(labels, (list, tuple)):
+                text_lab = labels[0]
+            elif torch.is_tensor(labels):
+                text_lab = labels.squeeze()[0]
+            else:
+                text_lab = str(labels)
+
+            if isinstance(text_lab, torch.Tensor):
+                text_lab = text_lab.item() if text_lab.ndim == 0 else text_lab.tolist()
+            if isinstance(text_lab, list):
+                text_lab = text_lab[0]
+            text_lab = str(text_lab)
+
+            # Prepare posterior tensor for confidence computation
+            posterior_tensor = torch.as_tensor(log_posteriors).squeeze()
+
+            if posterior_tensor.ndim == 0:
+                posterior_tensor = posterior_tensor.unsqueeze(0)
+
+            if posterior_tensor.numel() == 0:
+                logger.error(
+                    "Language ID model returned an empty posterior tensor; falling back to default language"
+                )
+                return (self.default_language, 0.0)
+
+            # Predicted index may be tensor/list
+            if torch.is_tensor(indices):
+                pred_idx = int(indices.squeeze().item())
+            elif isinstance(indices, (list, tuple)):
+                pred_idx = int(indices[0])
+            else:
+                pred_idx = int(indices)
+
+            if pred_idx < 0 or pred_idx >= posterior_tensor.numel():
+                logger.error(
+                    "Language ID predicted index %s outside posterior tensor bounds %s; using argmax instead",
+                    pred_idx,
+                    posterior_tensor.shape,
+                )
+                pred_idx = int(torch.argmax(posterior_tensor).item())
+
+            probabilities = torch.softmax(posterior_tensor, dim=0)
+            confidence_tensor = probabilities[pred_idx]
+
+            if not torch.isfinite(confidence_tensor):
+                logger.error(
+                    "Language ID produced a non-finite confidence value; falling back to default language"
+                )
+                return (self.default_language, 0.0)
+
+            confidence = confidence_tensor.item()
 
             # Map VoxLingua code to our 2-letter code
-            lang_code = self.lang_code_map.get(text_lab, text_lab[:2] if len(text_lab) >= 2 else text_lab)
+            lang_code = self.lang_code_map.get(
+                text_lab, text_lab[:2] if len(text_lab) >= 2 else text_lab
+            )
 
             # Check if language is supported
             if lang_code not in self.SUPPORTED_LANGUAGES:

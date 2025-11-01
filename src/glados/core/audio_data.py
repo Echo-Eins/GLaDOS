@@ -55,6 +55,7 @@ class RecognitionResult:
     timestamp: float | None = None
     duration: float | None = None
     sample_rate: int | None = None
+    language: str | None = None
 
 
 @dataclass

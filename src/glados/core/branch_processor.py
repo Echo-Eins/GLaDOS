@@ -16,7 +16,7 @@ from loguru import logger
 from ..ASR import TranscriberProtocol
 from ..TTS import SpeechSynthesizerProtocol
 from ..utils import spoken_text_converter as stc
-from .audio_data import AudioMessage
+from .audio_data import AudioMessage, RecognitionResult
 from .language_router import LanguageSegment
 
 
@@ -37,6 +37,9 @@ class BranchProcessor:
         stc_instance: stc.SpokenTextConverter,
         shutdown_event: threading.Event,
         pause_time: float = 0.05,
+        llm_queue: queue.Queue[RecognitionResult] | None = None,
+        forward_to_llm: bool = False,
+        generate_tts: bool = True,
     ):
         """Initialize branch processor.
 
@@ -49,6 +52,9 @@ class BranchProcessor:
             stc_instance: Text normalization converter
             shutdown_event: Shutdown signal
             pause_time: Sleep time between queue checks
+            llm_queue: Optional queue to forward transcripts to the LLM pipeline
+            forward_to_llm: Forward recognized text to LLM queue when True
+            generate_tts: Whether to synthesize TTS for recognized text
         """
         self.language = language.upper()
         self.input_queue = input_queue
@@ -58,6 +64,9 @@ class BranchProcessor:
         self.stc = stc_instance
         self.shutdown_event = shutdown_event
         self.pause_time = pause_time
+        self.llm_queue = llm_queue
+        self.forward_to_llm = forward_to_llm
+        self.generate_tts = generate_tts
 
         # Performance metrics
         self.segments_processed = 0
@@ -101,28 +110,68 @@ class BranchProcessor:
             # Step 1: ASR (Speech Recognition)
             asr_start = time.time()
 
-            # Normalize audio
             audio = segment.audio.astype(np.float32)
             max_val = np.abs(audio).max()
             if max_val > 0:
                 audio = audio / max_val
 
-            # Transcribe
             logger.debug(
                 f"{self.language}: Running ASR on {len(audio)/16000:.2f}s audio"
             )
-            text = self.asr_model.transcribe(audio)
 
-            asr_time = time.time() - asr_start
-            self.total_asr_time += asr_time
+            emotions = segment.emotions
+            text = ""
+            try:
+                if hasattr(self.asr_model, "transcribe_with_emotions"):
+                    text, emotions = self.asr_model.transcribe_with_emotions(audio)
+                else:
+                    text = self.asr_model.transcribe(audio)
+            finally:
+                asr_time = time.time() - asr_start
 
-            if not text or not text.strip():
-                logger.warning(f"{self.language}: ASR returned empty transcription")
+            text = (text or "").strip()
+
+            if text:
+                self.total_asr_time += asr_time
+                logger.success(
+                    f"{self.language}-ASR ({asr_time:.3f}s): '{text}'"
+                )
+            else:
+                fallback = (segment.transcript or "").strip()
+                if fallback:
+                    logger.warning(
+                        f"{self.language}: Branch ASR empty, falling back to routed transcript '{fallback}'"
+                    )
+                    text = fallback
+                else:
+                    logger.warning(f"{self.language}: No transcript available after ASR")
+                    return
+
+            # Forward transcript to LLM pipeline if configured
+            if self.forward_to_llm and self.llm_queue is not None:
+                recognition = RecognitionResult(
+                    text=text,
+                    emotions=emotions,
+                    audio=segment.audio,
+                    timestamp=segment.timestamp,
+                    duration=segment.duration,
+                    sample_rate=segment.sample_rate,
+                    language=self.language.lower(),
+                )
+                try:
+                    self.llm_queue.put_nowait(recognition)
+                except queue.Full:
+                    self.llm_queue.put(recognition)
+                logger.info(
+                    f"{self.language}-Branch: Forwarded transcript to LLM queue: '{text}'"
+                )
+
+            if not self.generate_tts:
+                self.segments_processed += 1
+                logger.debug(
+                    f"{self.language}-Branch: generate_tts disabled, skipping TTS synthesis"
+                )
                 return
-
-            logger.success(
-                f"{self.language}-ASR ({asr_time:.3f}s): '{text}'"
-            )
 
             # Step 2: Text Normalization
             normalized_text = self.stc.text_to_spoken(text)
@@ -161,7 +210,6 @@ class BranchProcessor:
 
             self.segments_processed += 1
 
-            # Log performance metrics
             total_time = asr_time + tts_time
             logger.info(
                 f"{self.language}-Branch: Segment processed in {total_time:.3f}s "
@@ -214,6 +262,9 @@ def create_branch_processors(
     stc_instance: stc.SpokenTextConverter,
     shutdown_event: threading.Event,
     pause_time: float = 0.05,
+    llm_queue: queue.Queue[RecognitionResult] | None = None,
+    forward_to_llm_languages: set[str] | None = None,
+    tts_languages: set[str] | None = None,
 ) -> tuple[BranchProcessor, BranchProcessor]:
     """Create RU and EN branch processors.
 
@@ -228,10 +279,25 @@ def create_branch_processors(
         stc_instance: Text converter
         shutdown_event: Shutdown signal
         pause_time: Loop pause time
+        llm_queue: Shared queue for forwarding transcripts to LLM
+        forward_to_llm_languages: Set of languages that should forward transcripts
+        tts_languages: Languages for which TTS synthesis should run
 
     Returns:
         Tuple of (RU processor, EN processor)
     """
+    if forward_to_llm_languages is None:
+        forward_set: set[str] = set()
+    else:
+        forward_set = {lang.lower() for lang in forward_to_llm_languages}
+
+    if tts_languages is None:
+        tts_source = {"ru", "en"}
+    else:
+        tts_source = tts_languages
+
+    tts_set = {lang.lower() for lang in tts_source}
+
     ru_processor = BranchProcessor(
         language="ru",
         input_queue=ru_input_queue,
@@ -241,6 +307,9 @@ def create_branch_processors(
         stc_instance=stc_instance,
         shutdown_event=shutdown_event,
         pause_time=pause_time,
+        llm_queue=llm_queue,
+        forward_to_llm="ru" in forward_set,
+        generate_tts="ru" in tts_set,
     )
 
     en_processor = BranchProcessor(
@@ -252,6 +321,9 @@ def create_branch_processors(
         stc_instance=stc_instance,
         shutdown_event=shutdown_event,
         pause_time=pause_time,
+        llm_queue=llm_queue,
+        forward_to_llm="en" in forward_set,
+        generate_tts="en" in tts_set,
     )
 
     return ru_processor, en_processor

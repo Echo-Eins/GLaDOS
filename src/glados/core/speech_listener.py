@@ -405,6 +405,8 @@ class SpeechListener:
         recognition.duration = duration_s
         recognition.sample_rate = self.input_sample_rate
 
+        enqueue_llm = False
+
         if recognition.text:
             logger.success(f"ASR: '{recognition.text}'")
             if recognition.emotions:
@@ -415,7 +417,7 @@ class SpeechListener:
             if self.wake_word and not self._wakeword_detected(recognition.text):
                 logger.info(f"Wake word '{self.wake_word}' not detected")
             else:
-                self.llm_queue.put(recognition)
+                enqueue_llm = self.language_router is None
                 self.processing_active_event.set()
         else:
             logger.warning("ASR returned empty transcription")
@@ -433,13 +435,24 @@ class SpeechListener:
                 routed_segment = self.language_router.route_segment(segment)
                 routed_duration = routed_segment.duration or duration_s
                 routed_language = routed_segment.language or "unknown"
+                recognition.language = routed_language
                 logger.info(
                     f"Bilingual routing: dispatched {routed_duration:.2f}s segment "
                     f"to {routed_language.upper()} branch (confidence {routed_segment.confidence:.3f})"
                 )
+
+                default_lang = getattr(self.language_router, "default_language", "ru")
+                if routed_language == default_lang:
+                    enqueue_llm = True
             except Exception as exc:
                 logger.error(f"Failed to route segment to bilingual pipeline: {exc}")
                 logger.exception(exc)
+                enqueue_llm = True
+        else:
+            recognition.language = None
+
+        if enqueue_llm and recognition.text:
+            self.llm_queue.put(recognition)
 
         self.reset()
 

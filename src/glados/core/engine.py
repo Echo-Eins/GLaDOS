@@ -366,6 +366,9 @@ class Glados:
                         stc_instance=self._stc,
                         shutdown_event=self.shutdown_event,
                         pause_time=self.PAUSE_TIME,
+                        llm_queue=self.llm_queue,
+                        forward_to_llm_languages={"en"},
+                        tts_languages=set(),
                     )
 
                     # Create Audio Mixer
