@@ -47,7 +47,18 @@ class AudioInputMessage:
 
 @dataclass
 class RecognitionResult:
-    """Speech recognition outcome including optional metadata."""
+    """Speech recognition outcome including optional emotion probabilities and language metadata.
+
+    Args:
+        text: Transcribed text from ASR
+        emotions: Optional emotion probabilities from GigaAM (for Russian)
+        audio: Optional audio samples associated with this recognition
+        timestamp: Optional timestamp when recognition occurred
+        duration: Optional duration of the audio segment in seconds
+        sample_rate: Optional sample rate of the audio
+        language: Detected language code ('ru', 'en', or None if not detected)
+        language_confidence: Language detection confidence (0.0-1.0, or None if not detected)
+    """
 
     text: str
     emotions: Mapping[str, float] | None = None
@@ -55,6 +66,8 @@ class RecognitionResult:
     timestamp: float | None = None
     duration: float | None = None
     sample_rate: int | None = None
+    language: str | None = None
+    language_confidence: float | None = None
 
 
 @dataclass

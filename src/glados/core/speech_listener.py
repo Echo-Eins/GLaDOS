@@ -83,6 +83,14 @@ class SpeechListener:
         wake_word: str | None,
         pause_time: float,
         interruptible: bool = True,
+        # Bilingual mode parameters
+        enable_en_branch: bool = False,
+        lid_model: "object | None" = None,  # SpeechBrainLanguageID
+        ru_asr_model: TranscriberProtocol | None = None,
+        en_asr_model: TranscriberProtocol | None = None,
+        lid_confidence_threshold: float = 0.7,
+        default_language: str = "ru",
+        # EN-Branch threading (separate architecture)
         language_router: "LanguageRouter | None" = None,
     ) -> None:
         """
@@ -94,17 +102,45 @@ class SpeechListener:
             shutdown_event: A threading.Event to signal the application to shut down.
             currently_speaking_event: A threading.Event indicating if the assistant is currently speaking.
             processing_active_event: A threading.Event indicating if processing is active (e.g., for LLM/TTS).
-            asr_model: An instance conforming to `TranscriberProtocol` for speech recognition.
+            asr_model: An instance conforming to `TranscriberProtocol` for speech recognition (main/fallback).
             wake_word: Optional wake word string to activate the assistant. Defaults to None.
+            pause_time: Sleep time between queue checks.
             interruptible: If True, allows new speech input to interrupt ongoing assistant speech.
+            enable_en_branch: Enable bilingual RU/EN mode with language detection.
+            lid_model: Language ID model (SpeechBrainLanguageID) for detecting RU/EN.
+            ru_asr_model: Russian ASR model (GigaAM) for bilingual mode.
+            en_asr_model: English ASR model (Parakeet-TDT) for bilingual mode.
+            lid_confidence_threshold: Minimum confidence for language detection (0.0-1.0).
+            default_language: Default language when confidence < threshold ('ru' or 'en').
         """
         self.audio_io = audio_io
         self.llm_queue = llm_queue
-        self.asr_model = asr_model
+        self.asr_model = asr_model  # Main/fallback ASR
         self.wake_word = wake_word.lower() if wake_word else None
         self.pause_time = pause_time
         self.interruptible = interruptible
         self.language_router = language_router
+
+        # Bilingual mode configuration
+        self.enable_en_branch = enable_en_branch
+        self.lid_model = lid_model
+        self.ru_asr_model = ru_asr_model if enable_en_branch else None
+        self.en_asr_model = en_asr_model if enable_en_branch else None
+        self.lid_confidence_threshold = lid_confidence_threshold
+        self.default_language = default_language
+
+        # Validate bilingual configuration
+        if self.enable_en_branch:
+            if not lid_model:
+                logger.warning("EN-Branch enabled but no LID model provided, disabling bilingual mode")
+                self.enable_en_branch = False
+            elif not ru_asr_model or not en_asr_model:
+                logger.warning("EN-Branch enabled but missing RU/EN ASR models, disabling bilingual mode")
+                self.enable_en_branch = False
+            else:
+                logger.success(
+                    f"Bilingual mode ENABLED: RU/EN language detection with {lid_confidence_threshold:.2f} confidence threshold"
+                )
 
         ## Circular buffer to hold pre-activation samples
         #self._buffer: deque[NDArray[np.float32]] = deque(maxlen=self.BUFFER_SIZE // self.VAD_SIZE)
@@ -397,7 +433,64 @@ class SpeechListener:
                 self.reset()
                 return
 
-        recognition = self.asr(self._samples)
+        # Bilingual mode: Detect language and route to appropriate ASR
+        lang_code = None
+        lang_confidence = None
+        selected_asr = None
+
+        if self.enable_en_branch and self.lid_model:
+            logger.debug("🌐 Detecting language with SpeechBrain VoxLingua107...")
+            start_time = time.time()
+
+            # Call LID on concatenated audio
+            lang_code, lang_confidence = self.lid_model.detect(audio)
+            lid_time_ms = (time.time() - start_time) * 1000
+
+            # Log language detection with confidence
+            logger.info(
+                f"🌐 Language detected: {lang_code.upper()} "
+                f"(confidence: {lang_confidence:.3f}, lid_time: {lid_time_ms:.0f}ms)"
+            )
+
+            # Select appropriate ASR based on detected language and confidence
+            if lang_confidence >= self.lid_confidence_threshold:
+                if lang_code == "ru":
+                    selected_asr = self.ru_asr_model
+                    logger.debug("📍 Routing to RU-Branch (GigaAM)")
+                elif lang_code == "en":
+                    selected_asr = self.en_asr_model
+                    logger.debug("📍 Routing to EN-Branch (Parakeet-TDT)")
+                else:
+                    # Unsupported language (should be caught by LID model, but check anyway)
+                    selected_asr = self.asr_model
+                    logger.warning(
+                        f"⚠️  Unsupported language '{lang_code}' detected, "
+                        f"using fallback ASR ({self.default_language})"
+                    )
+            else:
+                # Low confidence - use fallback ASR
+                selected_asr = self.asr_model
+                logger.warning(
+                    f"⚠️  Low confidence ({lang_confidence:.3f} < {self.lid_confidence_threshold:.2f}), "
+                    f"using fallback ASR ({self.default_language})"
+                )
+                # Set to default language for logging
+                lang_code = self.default_language
+        else:
+            # Monolingual mode - use main ASR
+            selected_asr = self.asr_model
+            lang_code = self.default_language if hasattr(self, 'default_language') else None
+            lang_confidence = 1.0  # No detection performed
+            logger.debug("Monolingual mode: using main ASR")
+
+        # Perform ASR with selected model
+        start_asr_time = time.time()
+        recognition = self.asr(self._samples, asr_model=selected_asr)
+        asr_time_ms = (time.time() - start_asr_time) * 1000
+
+        # Add language metadata to recognition result
+        recognition.language = lang_code
+        recognition.language_confidence = lang_confidence
 
         # Attach audio buffer metadata for downstream consumers
         recognition.audio = audio
@@ -406,7 +499,11 @@ class SpeechListener:
         recognition.sample_rate = self.input_sample_rate
 
         if recognition.text:
-            logger.success(f"ASR: '{recognition.text}'")
+            # Enhanced logging with language information
+            log_msg = f"ASR: '{recognition.text}'"
+            if lang_code:
+                log_msg += f" [lang: {lang_code.upper()}, conf: {lang_confidence:.3f}, asr_time: {asr_time_ms:.0f}ms]"
+            logger.success(log_msg)
             if recognition.emotions:
                 logger.success(f"Emotions: {dict(recognition.emotions)}")
             else:
@@ -443,7 +540,11 @@ class SpeechListener:
 
         self.reset()
 
-    def asr(self, samples: list[NDArray[np.float32]]) -> RecognitionResult:
+    def asr(
+        self,
+        samples: list[NDArray[np.float32]],
+        asr_model: TranscriberProtocol | None = None,
+    ) -> RecognitionResult:
         """
         Performs Automatic Speech Recognition (ASR) on a list of audio samples.
 
@@ -453,9 +554,10 @@ class SpeechListener:
 
         Args:
             samples: A list of numpy arrays (float32) containing audio sample chunks.
+            asr_model: Optional ASR model to use. If None, uses self.asr_model.
 
         Returns:
-            The transcribed text as a string.
+            RecognitionResult with transcribed text and optional emotions.
         """
         if not samples:
             logger.warning("ASR received empty sample list")
@@ -471,12 +573,15 @@ class SpeechListener:
         # Normalize to full range [-1.0, 1.0]
         audio = audio / max_abs_val
 
+        # Use provided model or default to self.asr_model
+        model = asr_model if asr_model is not None else self.asr_model
+
         # Call ASR
-        if hasattr(self.asr_model, "transcribe_with_emotions"):
-            detected_text, emotions = self.asr_model.transcribe_with_emotions(audio)
+        if hasattr(model, "transcribe_with_emotions"):
+            detected_text, emotions = model.transcribe_with_emotions(audio)
             emotions = sanitize_emotions(emotions)
         else:
-            detected_text = self.asr_model.transcribe(audio)
+            detected_text = model.transcribe(audio)
             emotions = None
 
         detected_text = (detected_text or "").strip()

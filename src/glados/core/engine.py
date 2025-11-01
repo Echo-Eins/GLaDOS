@@ -229,6 +229,12 @@ class Glados:
         self.announcement = announcement
         self._messages: list[dict[str, str]] = list(personality_preprompt)
 
+        # Bilingual mode parameters
+        self._ru_asr_model = ru_asr_model
+        self._en_asr_model = en_asr_model
+        self._lid_model = lid_model
+        self._language_detection_config = language_detection_config or {}
+
         # Spectrum sharing infrastructure for UI widgets
         self._spectrum_band_count = 16
         self.spectrum_queue: queue.Queue[NDArray[np.float32]] = queue.Queue(maxsize=256)
@@ -265,6 +271,13 @@ class Glados:
             currently_speaking_event=self.currently_speaking_event,
             processing_active_event=self.processing_active_event,
             pause_time=self.PAUSE_TIME,
+            # Bilingual mode parameters
+            enable_en_branch=enable_en_branch,
+            lid_model=self._lid_model,
+            ru_asr_model=self._ru_asr_model,
+            en_asr_model=self._en_asr_model,
+            lid_confidence_threshold=self._language_detection_config.get("confidence_threshold", 0.7),
+            default_language=self._language_detection_config.get("default_language", "ru"),
         )
 
         self.llm_processor = LanguageModelProcessor(
