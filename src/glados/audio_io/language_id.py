@@ -138,8 +138,8 @@ class SpeechBrainLanguageID:
             with torch.no_grad():
                 prediction = self.classifier.classify_batch(audio_tensor)
 
-            # Extract outputs from SpeechBrain tuple: (posteriors, scores, index, text_lab)
-            _, scores, indices, labels = prediction
+            # Extract outputs from SpeechBrain tuple: (log_posteriors, max_score, index, text_lab)
+            log_posteriors, _, indices, labels = prediction
 
             # Derive textual label
             if isinstance(labels, (list, tuple)):
@@ -155,18 +155,15 @@ class SpeechBrainLanguageID:
                 text_lab = text_lab[0]
             text_lab = str(text_lab)
 
-            # Prepare score tensor for confidence computation
-            if torch.is_tensor(scores):
-                score_tensor = scores.squeeze()
-            else:
-                score_tensor = torch.as_tensor(scores)
+            # Prepare posterior tensor for confidence computation
+            posterior_tensor = torch.as_tensor(log_posteriors).squeeze()
 
-            if score_tensor.ndim == 0:
-                score_tensor = score_tensor.unsqueeze(0)
+            if posterior_tensor.ndim == 0:
+                posterior_tensor = posterior_tensor.unsqueeze(0)
 
-            if score_tensor.numel() == 0:
+            if posterior_tensor.numel() == 0:
                 logger.error(
-                    "Language ID model returned an empty score tensor; falling back to default language"
+                    "Language ID model returned an empty posterior tensor; falling back to default language"
                 )
                 return (self.default_language, 0.0)
 
@@ -178,15 +175,24 @@ class SpeechBrainLanguageID:
             else:
                 pred_idx = int(indices)
 
-            if pred_idx < 0 or pred_idx >= score_tensor.numel():
+            if pred_idx < 0 or pred_idx >= posterior_tensor.numel():
                 logger.error(
-                    "Language ID predicted index %s outside score tensor bounds %s; using max score instead",
+                    "Language ID predicted index %s outside posterior tensor bounds %s; using argmax instead",
                     pred_idx,
-                    score_tensor.shape,
+                    posterior_tensor.shape,
                 )
-                pred_idx = int(torch.argmax(score_tensor).item())
+                pred_idx = int(torch.argmax(posterior_tensor).item())
 
-            confidence = torch.softmax(score_tensor, dim=0)[pred_idx].item()
+            probabilities = torch.softmax(posterior_tensor, dim=0)
+            confidence_tensor = probabilities[pred_idx]
+
+            if not torch.isfinite(confidence_tensor):
+                logger.error(
+                    "Language ID produced a non-finite confidence value; falling back to default language"
+                )
+                return (self.default_language, 0.0)
+
+            confidence = confidence_tensor.item()
 
             # Map VoxLingua code to our 2-letter code
             lang_code = self.lang_code_map.get(

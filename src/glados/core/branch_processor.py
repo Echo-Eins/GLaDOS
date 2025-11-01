@@ -286,8 +286,17 @@ def create_branch_processors(
     Returns:
         Tuple of (RU processor, EN processor)
     """
-    forward_set = {lang.lower() for lang in (forward_to_llm_languages or set())}
-    tts_set = {lang.lower() for lang in (tts_languages or {"ru", "en"})}
+    if forward_to_llm_languages is None:
+        forward_set: set[str] = set()
+    else:
+        forward_set = {lang.lower() for lang in forward_to_llm_languages}
+
+    if tts_languages is None:
+        tts_source = {"ru", "en"}
+    else:
+        tts_source = tts_languages
+
+    tts_set = {lang.lower() for lang in tts_source}
 
     ru_processor = BranchProcessor(
         language="ru",
